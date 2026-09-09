@@ -1,24 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getAuthContext } from '@/lib/auth';
+import { getAuthContext, assertTenantAccess } from '@/lib/auth';
 import { parseBankStatement, parseSalesInvoices, parseVendorBills } from '@/lib/normalizer';
 import { runCategorizationBatch } from '@/lib/categorizationEngine';
 import { runReconciliationBatch } from '@/lib/reconciliationEngine';
 import { runExceptionDetection } from '@/lib/exceptionEngine';
 import { logAuditEvent } from '@/lib/auditLogger';
+import logger from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
+
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25 MB payload ceiling
 
 export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
     const orgId = auth.activeOrgId;
+    await assertTenantAccess(auth, orgId);
+
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
     const fileType = formData.get('fileType') as string;
 
     if (!file) {
       return NextResponse.json({ success: false, error: 'File is required' }, { status: 400 });
+    }
+
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return NextResponse.json(
+        { success: false, error: `File size (${(file.size / 1024 / 1024).toFixed(1)}MB) exceeds maximum limit of 25MB` },
+        { status: 400 }
+      );
     }
 
     if (!['bank_statement', 'sales_invoices', 'vendor_bills'].includes(fileType)) {
@@ -50,8 +62,24 @@ export async function POST(req: NextRequest) {
         [docId, orgId, file.name, fileType, buffer.length, txns.length, auth.userId]
       );
 
+      let insertedCount = 0;
+      let duplicatesSkipped = 0;
+
       for (let i = 0; i < txns.length; i++) {
         const t = txns[i];
+
+        // Deduplication guard: Check if transaction with same reference number or date+amount exists
+        if (t.reference_number) {
+          const dupRes = await db.query(
+            `SELECT id FROM transactions WHERE org_id = $1 AND reference_number = $2;`,
+            [orgId, t.reference_number]
+          );
+          if (dupRes.rows.length > 0) {
+            duplicatesSkipped++;
+            continue;
+          }
+        }
+
         const txnId = `txn-up-${Date.now()}-${i}`;
         await db.query(
           `INSERT INTO transactions (
@@ -60,6 +88,7 @@ export async function POST(req: NextRequest) {
            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'unreconciled', 'unreconciled', FALSE);`,
           [txnId, orgId, bankAccountId, docId, t.date, t.description, t.raw_description, t.amount, t.type, t.counterparty, t.reference_number || null]
         );
+        insertedCount++;
       }
 
       // Automatically run pipeline for this specific organization
@@ -74,13 +103,14 @@ export async function POST(req: NextRequest) {
         action: 'IMPORT_DATA',
         entityType: 'document',
         entityId: docId,
-        explanation: `Uploaded bank statement "${file.name}" (${txns.length} transactions) for organization ${auth.activeOrgName}. Ingestion pipeline executed.`
+        explanation: `Uploaded bank statement "${file.name}" (${insertedCount} ingested, ${duplicatesSkipped} duplicates skipped). Ingestion pipeline executed.`
       });
 
       return NextResponse.json({
         success: true,
-        message: `Successfully ingested ${txns.length} transactions from "${file.name}".`,
-        rowCount: txns.length
+        message: `Successfully ingested ${insertedCount} transactions from "${file.name}" (${duplicatesSkipped} duplicates skipped).`,
+        rowCount: insertedCount,
+        duplicatesSkipped
       });
     }
 
@@ -96,8 +126,23 @@ export async function POST(req: NextRequest) {
         [docId, orgId, file.name, fileType, buffer.length, invoices.length, auth.userId]
       );
 
+      let insertedCount = 0;
+      let duplicatesSkipped = 0;
+
       for (let i = 0; i < invoices.length; i++) {
         const inv = invoices[i];
+
+        if (inv.invoice_number) {
+          const dupRes = await db.query(
+            `SELECT id FROM invoices WHERE org_id = $1 AND invoice_number = $2;`,
+            [orgId, inv.invoice_number]
+          );
+          if (dupRes.rows.length > 0) {
+            duplicatesSkipped++;
+            continue;
+          }
+        }
+
         const invId = `inv-up-${Date.now()}-${i}`;
         await db.query(
           `INSERT INTO invoices (
@@ -105,6 +150,7 @@ export async function POST(req: NextRequest) {
            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'unpaid');`,
           [invId, orgId, docId, inv.customer_name, inv.invoice_number, inv.date, inv.due_date || null, inv.total_amount, inv.tax_amount || 0]
         );
+        insertedCount++;
       }
 
       await runReconciliationBatch(orgId);
@@ -117,13 +163,14 @@ export async function POST(req: NextRequest) {
         action: 'IMPORT_DATA',
         entityType: 'document',
         entityId: docId,
-        explanation: `Uploaded sales invoices batch "${file.name}" (${invoices.length} invoices).`
+        explanation: `Uploaded sales invoices batch "${file.name}" (${insertedCount} ingested, ${duplicatesSkipped} duplicates skipped).`
       });
 
       return NextResponse.json({
         success: true,
-        message: `Successfully ingested ${invoices.length} sales invoices from "${file.name}".`,
-        rowCount: invoices.length
+        message: `Successfully ingested ${insertedCount} sales invoices from "${file.name}" (${duplicatesSkipped} duplicates skipped).`,
+        rowCount: insertedCount,
+        duplicatesSkipped
       });
     }
 
@@ -139,8 +186,23 @@ export async function POST(req: NextRequest) {
         [docId, orgId, file.name, fileType, buffer.length, bills.length, auth.userId]
       );
 
+      let insertedCount = 0;
+      let duplicatesSkipped = 0;
+
       for (let i = 0; i < bills.length; i++) {
         const b = bills[i];
+
+        if (b.bill_number) {
+          const dupRes = await db.query(
+            `SELECT id FROM bills WHERE org_id = $1 AND bill_number = $2;`,
+            [orgId, b.bill_number]
+          );
+          if (dupRes.rows.length > 0) {
+            duplicatesSkipped++;
+            continue;
+          }
+        }
+
         const billId = `bill-up-${Date.now()}-${i}`;
         await db.query(
           `INSERT INTO bills (
@@ -148,6 +210,7 @@ export async function POST(req: NextRequest) {
            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'unpaid');`,
           [billId, orgId, docId, b.vendor_name, b.bill_number, b.date, b.due_date || null, b.total_amount, b.tax_amount || 0]
         );
+        insertedCount++;
       }
 
       await runReconciliationBatch(orgId);
@@ -160,19 +223,21 @@ export async function POST(req: NextRequest) {
         action: 'IMPORT_DATA',
         entityType: 'document',
         entityId: docId,
-        explanation: `Uploaded vendor payables batch "${file.name}" (${bills.length} bills).`
+        explanation: `Uploaded vendor payables batch "${file.name}" (${insertedCount} ingested, ${duplicatesSkipped} duplicates skipped).`
       });
 
       return NextResponse.json({
         success: true,
-        message: `Successfully ingested ${bills.length} vendor bills from "${file.name}".`,
-        rowCount: bills.length
+        message: `Successfully ingested ${insertedCount} vendor bills from "${file.name}" (${duplicatesSkipped} duplicates skipped).`,
+        rowCount: insertedCount,
+        duplicatesSkipped
       });
     }
 
     return NextResponse.json({ success: false, error: 'Unknown upload type' }, { status: 400 });
   } catch (error: any) {
-    console.error('Upload Error:', error);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    logger.error('Upload Error:', { route: '/api/upload', err: String(error) });
+    const status = error.message?.includes('403 Forbidden') ? 403 : 500;
+    return NextResponse.json({ success: false, error: error.message }, { status });
   }
 }

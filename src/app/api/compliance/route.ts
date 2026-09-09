@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getAuthContext } from '@/lib/auth';
+import logger from '@/lib/logger';
 
 /**
  * Milestone 12: Compliance Calendar API
@@ -193,7 +194,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ success: true, filings, summary });
   } catch (err: any) {
-    console.error('[compliance/GET]', err);
+    logger.error('[compliance/GET]', { route: '/api/compliance', err: String(err) });
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
 }
@@ -255,7 +256,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, message: `Filing ${id} updated successfully` });
   } catch (err: any) {
-    console.error('[compliance/POST]', err);
+    logger.error('[compliance/POST]', { route: '/api/compliance', err: String(err) });
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
 }

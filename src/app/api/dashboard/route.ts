@@ -1,50 +1,68 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getAuthContext } from '@/lib/auth';
+import { getAuthContext, assertTenantAccess } from '@/lib/auth';
+import logger from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
+  const t0 = Date.now();
   try {
     const auth = await getAuthContext(req);
     const orgId = auth.activeOrgId;
+    await assertTenantAccess(auth, orgId);
+
     const db = await getDb();
 
-    // 1. Approved Transactions (The Ledger)
-    const approvedTxnsRes = await db.query(
-      `SELECT t.id, t.date, t.amount, t.type, t.counterparty, t.category_id,
-              c.name as category_name, c.code as category_code, c.type as account_type, c.sub_type
-       FROM transactions t
-       JOIN chart_of_accounts c ON t.category_id = c.id
-       WHERE t.org_id = $1 AND t.is_approved = TRUE;`,
-      [orgId]
-    );
+    // Parallelise all independent DB queries — eliminates sequential round-trip latency
+    const [
+      approvedTxnsRes,
+      allTxnsRes,
+      exceptionsRes,
+      invoicesRes,
+      billsRes,
+      bankRes,
+    ] = await Promise.all([
+      // 1. Approved Transactions (The Ledger)
+      db.query(
+        `SELECT t.id, t.date, t.amount, t.type, t.counterparty, t.category_id,
+                c.name as category_name, c.code as category_code, c.type as account_type, c.sub_type
+         FROM transactions t
+         JOIN chart_of_accounts c ON t.category_id = c.id
+         WHERE t.org_id = $1 AND t.is_approved = TRUE;`,
+        [orgId]
+      ),
+      // 2. All Transactions for operational metrics
+      db.query(
+        `SELECT id, amount, type, is_approved, reconciliation_status, categorization_confidence, categorization_method
+         FROM transactions
+         WHERE org_id = $1;`,
+        [orgId]
+      ),
+      // 3. Open Exceptions
+      db.query(
+        `SELECT id, severity, exception_type FROM exceptions WHERE org_id = $1 AND status = 'open';`,
+        [orgId]
+      ),
+      // 4. Invoices
+      db.query(
+        `SELECT id, total_amount, status FROM invoices WHERE org_id = $1;`,
+        [orgId]
+      ),
+      // 5. Bills
+      db.query(
+        `SELECT id, total_amount, status FROM bills WHERE org_id = $1;`,
+        [orgId]
+      ),
+      // 6. Bank opening balance
+      db.query(
+        `SELECT opening_balance FROM bank_accounts WHERE org_id = $1 LIMIT 1;`,
+        [orgId]
+      ),
+    ]);
+
     const approvedTxns = approvedTxnsRes.rows;
-
-    // 2. All Transactions for operational metrics
-    const allTxnsRes = await db.query(
-      `SELECT id, amount, type, is_approved, reconciliation_status, categorization_confidence, categorization_method
-       FROM transactions
-       WHERE org_id = $1;`,
-      [orgId]
-    );
     const allTxns = allTxnsRes.rows;
-
-    // 3. Open Exceptions
-    const exceptionsRes = await db.query(
-      `SELECT id, severity, exception_type FROM exceptions WHERE org_id = $1 AND status = 'open';`,
-      [orgId]
-    );
-
-    // 4. Invoices & Bills
-    const invoicesRes = await db.query(
-      `SELECT id, total_amount, status FROM invoices WHERE org_id = $1;`,
-      [orgId]
-    );
-    const billsRes = await db.query(
-      `SELECT id, total_amount, status FROM bills WHERE org_id = $1;`,
-      [orgId]
-    );
 
     // Calculate P&L strictly from approved records
     const revenueItems: Record<string, { name: string; code: string; amount: number }> = {};
@@ -75,11 +93,7 @@ export async function GET(req: NextRequest) {
     const netIncome = totalApprovedRevenue - totalApprovedExpenses;
 
     // Balance Sheet (Assets, Liabilities, Equity)
-    const bankRes = await db.query(
-      `SELECT opening_balance FROM bank_accounts WHERE org_id = $1 LIMIT 1;`,
-      [orgId]
-    );
-    const openingBal = Number(bankRes.rows[0]?.opening_balance || 1000000);
+    const openingBal = Number(bankRes.rows[0]?.opening_balance || 0);
     const currentBankBalance = openingBal + totalApprovedRevenue - totalApprovedExpenses;
 
     // Accounts Receivable = Unpaid Invoices total
@@ -115,7 +129,7 @@ export async function GET(req: NextRequest) {
     const unreconciledTotal = unreconciledTxns.reduce((sum, t) => sum + Number(t.amount), 0);
     const suggestedMatchCount = allTxns.filter(t => t.reconciliation_status === 'suggested_match').length;
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       orgId,
       orgName: auth.activeOrgName,
@@ -159,8 +173,10 @@ export async function GET(req: NextRequest) {
       },
       cashFlow
     });
+    logger.request('GET', '/api/dashboard', 200, Date.now() - t0, { orgId });
+    return response;
   } catch (error: any) {
-    console.error('Dashboard API Error:', error);
+    logger.error('Dashboard API error', { route: '/api/dashboard', err: String(error), durationMs: Date.now() - t0 });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CI Pipeline — AI Finance & Compliance Copilot
+#
+# Runs on every push and pull request to main.
+# Gates: typecheck → lint → test → build
+# All four must pass; any failure blocks the merge.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    name: Typecheck · Lint · Test · Build
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [20.x]
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Node.js setup ─────────────────────────────────────────────────────
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      # ── 3. Install dependencies ───────────────────────────────────────────────
+      - name: Install dependencies
+        run: npm ci
+
+      # ── 4. Typecheck ─────────────────────────────────────────────────────────
+      # Catches TypeScript errors before running tests.
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+
+      # ── 5. Lint ───────────────────────────────────────────────────────────────
+      # Enforces code quality rules. Failures block the build.
+      - name: Lint (next lint)
+        run: npm run lint
+
+      # ── 6. Tests ─────────────────────────────────────────────────────────────
+      # Runs the full test suite using the embedded PGlite database.
+      # No external DB or secrets required — app auto-falls back to PGlite.
+      - name: Run tests
+        run: npm test
+        env:
+          # Use test environment so logger is silent and no .env.local required
+          NODE_ENV: test
+
+      # ── 7. Production build ───────────────────────────────────────────────────
+      # Verifies the app compiles successfully with zero type errors.
+      # GEMINI_API_KEY is intentionally left unset — build must not require it.
+      - name: Production build (next build)
+        run: npm run build
+        env:
+          NODE_ENV: production
+          # SESSION_SECRET required in production — use a dummy value for build verification only.
+          # This is NOT a real secret; real secrets are injected by the hosting platform.
+          SESSION_SECRET: ci-build-verification-dummy-secret-not-used-at-runtime

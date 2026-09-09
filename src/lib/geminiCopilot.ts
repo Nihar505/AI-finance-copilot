@@ -1,5 +1,6 @@
 import { getDb } from './db';
 import { GoogleGenAI } from '@google/genai';
+import logger from './logger';
 
 export interface Citation {
   id: string;
@@ -134,14 +135,18 @@ Return strictly JSON format with this exact structure:
   "missingInfoNotice": "string or null"
 }`;
 
+      const aiStart = Date.now();
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: `${systemInstruction}\n\nUser Question: "${question}"\n\nFinancial Context JSON:\n${JSON.stringify(contextSummary, null, 2)}`
       });
+      const aiDuration = Date.now() - aiStart;
 
       const rawText = response.text || '';
       const cleaned = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
       const parsed = JSON.parse(cleaned);
+
+      logger.aiCall('gemini-2.5-flash', aiDuration, true, { orgId, route: '/api/ai/query' });
 
       return {
         directAnswer: parsed.directAnswer || 'Analysis complete.',
@@ -152,7 +157,7 @@ Return strictly JSON format with this exact structure:
         modelUsed: 'gemini-2.5-flash'
       };
     } catch (err) {
-      console.warn('Gemini query failed, switching to local grounded engine:', err);
+      logger.warn('Gemini query failed, switching to local grounded engine', { orgId, err: String(err) });
     }
   }
 

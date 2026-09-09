@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getAuthContext, checkRoleAccess } from '@/lib/auth';
+import { getAuthContext, checkRoleAccess, assertTenantAccess } from '@/lib/auth';
 import { logAuditEvent, recordApproval } from '@/lib/auditLogger';
+import { safeParseJson } from '@/lib/security';
+import logger from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
+    await assertTenantAccess(auth, auth.activeOrgId);
     
     // RBAC: Only CA or Admin can approve, override, or reject accounting entries
     const access = checkRoleAccess(auth, ['ca', 'admin']);
@@ -18,13 +21,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const db = await getDb();
-    const body = await req.json();
+    const bodyParsed = await safeParseJson<any>(req);
+    if (!bodyParsed.success || !bodyParsed.data) {
+      return NextResponse.json({ success: false, error: bodyParsed.error || 'Invalid JSON body' }, { status: 400 });
+    }
+    const body = bodyParsed.data;
     const { action, transactionId, newCategoryId, notes } = body;
     const orgId = auth.activeOrgId;
     const userId = auth.userId;
     const userName = auth.userName;
     const materialityThreshold = auth.materialityThreshold || 50000.00;
+    const db = await getDb();
 
     if (action === 'BATCH_APPROVE') {
       // Find all high-confidence (>=85%) unapproved transactions strictly BELOW materiality threshold
@@ -238,7 +245,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: false, error: 'Invalid action specified' }, { status: 400 });
   } catch (error: any) {
-    console.error('Approvals API Error:', error);
+    logger.error('Approvals API Error:', { route: '/api/approvals', err: String(error) });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

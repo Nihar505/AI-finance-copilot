@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getAuthContext } from '@/lib/auth';
+import logger from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +21,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ success: true, orgId, accounts: res.rows });
   } catch (error: any) {
-    console.error('Chart of Accounts API Error:', error);
+    logger.error('Chart of Accounts API Error:', { route: '/api/chart-of-accounts', err: String(error) });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthContext } from '@/lib/auth';
+import { getAuthContext, assertTenantAccess } from '@/lib/auth';
 import { getDb } from '@/lib/db';
+import { safeParseJson } from '@/lib/security';
+import logger from '@/lib/logger';
 
 export interface TDSCertificate {
   id: string;
@@ -194,7 +196,7 @@ export async function GET(req: NextRequest) {
       certificates,
     });
   } catch (err: any) {
-    console.error('[tds-certificates/GET]', err);
+    logger.error('[tds-certificates/GET]', { route: '/api/tds-certificates', err: String(err) });
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
 }
@@ -202,8 +204,13 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
-    const body = await req.json();
-    const { action, certificateId } = body;
+    await assertTenantAccess(auth, auth.activeOrgId);
+
+    const bodyParsed = await safeParseJson<any>(req);
+    if (!bodyParsed.success || !bodyParsed.data) {
+      return NextResponse.json({ success: false, error: bodyParsed.error || 'Invalid request body' }, { status: 400 });
+    }
+    const { action, certificateId } = bodyParsed.data;
 
     // RBAC check: Only CA or Admin can sign off on tax certificates
     if (action === 'sign_off') {
@@ -256,7 +263,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: false, error: 'Unknown action' }, { status: 400 });
   } catch (err: any) {
-    console.error('[tds-certificates/POST]', err);
+    logger.error('[tds-certificates/POST]', { route: '/api/tds-certificates', err: String(err) });
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
 }

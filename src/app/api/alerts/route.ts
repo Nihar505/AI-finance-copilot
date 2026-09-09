@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthContext } from '@/lib/auth';
+import { getAuthContext, assertTenantAccess } from '@/lib/auth';
 import { getDb } from '@/lib/db';
+import { isSafeExternalWebhookUrl, safeParseJson } from '@/lib/security';
+import logger from '@/lib/logger';
 
 /**
  * Compliance Alerts API
@@ -11,6 +13,7 @@ import { getDb } from '@/lib/db';
 export async function GET(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
+    await assertTenantAccess(auth, auth.activeOrgId);
     const db = await getDb();
 
     // Check how many filings are overdue or due in 48 hours
@@ -41,7 +44,7 @@ export async function GET(req: NextRequest) {
       totalPending: filingsRes.rows.length,
     });
   } catch (err: any) {
-    console.error('[alerts/GET]', err);
+    logger.error('[alerts/GET]', { route: '/api/alerts', err: String(err) });
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
 }
@@ -49,10 +52,22 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
-    const body = await req.json();
-    const { action, webhookUrl } = body;
+    await assertTenantAccess(auth, auth.activeOrgId);
+
+    const bodyParsed = await safeParseJson<any>(req);
+    if (!bodyParsed.success || !bodyParsed.data) {
+      return NextResponse.json({ success: false, error: bodyParsed.error || 'Invalid request body' }, { status: 400 });
+    }
+    const { action, webhookUrl } = bodyParsed.data;
 
     const targetUrl = (webhookUrl || process.env.SLACK_WEBHOOK_URL || '').trim();
+
+    if (targetUrl && !isSafeExternalWebhookUrl(targetUrl)) {
+      return NextResponse.json(
+        { success: false, error: 'Disallowed webhook URL. Only public HTTPS endpoints are permitted to prevent SSRF vulnerabilities.' },
+        { status: 400 }
+      );
+    }
 
     if (action === 'test') {
       const testPayload = {
@@ -269,7 +284,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: false, error: 'Invalid action. Use action=test or action=send_compliance_alert' }, { status: 400 });
   } catch (err: any) {
-    console.error('[alerts/POST]', err);
+    logger.error('[alerts/POST]', { route: '/api/alerts', err: String(err) });
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
 }

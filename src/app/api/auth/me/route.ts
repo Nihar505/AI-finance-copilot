@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthContext, getAccessibleOrganizations } from '@/lib/auth';
+import logger from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
-    const organizations = await getAccessibleOrganizations(auth.userId);
+    const organizations = await getAccessibleOrganizations(auth.userId, auth.role);
 
     return NextResponse.json({
       success: true,
@@ -25,7 +26,7 @@ export async function GET(req: NextRequest) {
       organizations
     });
   } catch (error: any) {
-    console.error('Error fetching auth context:', error);
+    logger.error('Error fetching auth context:', { route: '/api/auth/me', err: String(error) });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

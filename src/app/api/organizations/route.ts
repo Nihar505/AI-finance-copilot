@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getAuthContext, checkRoleAccess, getAccessibleOrganizations } from '@/lib/auth';
 import { logAuditEvent } from '@/lib/auditLogger';
+import logger from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -79,7 +80,7 @@ export async function POST(req: NextRequest) {
       }
     });
   } catch (error: any) {
-    console.error('Error creating organization:', error);
+    logger.error('Error creating organization:', { route: '/api/organizations', err: String(error) });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

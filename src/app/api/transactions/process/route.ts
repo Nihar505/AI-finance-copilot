@@ -3,6 +3,7 @@ import { getAuthContext } from '@/lib/auth';
 import { runCategorizationBatch } from '@/lib/categorizationEngine';
 import { runReconciliationBatch } from '@/lib/reconciliationEngine';
 import { runExceptionDetection } from '@/lib/exceptionEngine';
+import logger from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +24,7 @@ export async function POST(req: NextRequest) {
       exceptions
     });
   } catch (error: any) {
-    console.error('Process API Error:', error);
+    logger.error('Process API Error:', { route: '/api/transactions/process', err: String(error) });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

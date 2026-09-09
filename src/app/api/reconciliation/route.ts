@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getAuthContext } from '@/lib/auth';
+import { getAuthContext, assertTenantAccess } from '@/lib/auth';
+import logger from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,6 +9,7 @@ export async function GET(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
     const orgId = auth.activeOrgId;
+    await assertTenantAccess(auth, orgId);
     const db = await getDb();
 
     // 1. Fetch Suggested & Approved matches
@@ -58,7 +60,7 @@ export async function GET(req: NextRequest) {
       unmatched: unmatchedRes.rows
     });
   } catch (error: any) {
-    console.error('Reconciliation API Error:', error);
+    logger.error('Reconciliation API Error:', { route: '/api/reconciliation', err: String(error) });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthContext } from '@/lib/auth';
+import { getAuthContext, assertTenantAccess } from '@/lib/auth';
 import { getDb } from '@/lib/db';
 import { reconcileITC, seedGSTR2BIfEmpty } from '@/lib/gstr2bEngine';
+import { safeParseJson } from '@/lib/security';
+import logger from '@/lib/logger';
 
 /**
  * GET  /api/gstr2b?period=2024-10  — Fetch GSTR-2B entries and run ITC reconciliation
@@ -11,6 +13,7 @@ import { reconcileITC, seedGSTR2BIfEmpty } from '@/lib/gstr2bEngine';
 export async function GET(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
+    await assertTenantAccess(auth, auth.activeOrgId);
     const { searchParams } = new URL(req.url);
     const period = searchParams.get('period') || '2024-10';
 
@@ -21,7 +24,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ success: true, period, rows, summary });
   } catch (err: any) {
-    console.error('[gstr2b/GET]', err);
+    logger.error('[gstr2b/GET]', { route: '/api/gstr2b', err: String(err) });
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
 }
@@ -29,8 +32,13 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
-    const body = await req.json();
-    const { action, period, entries } = body;
+    await assertTenantAccess(auth, auth.activeOrgId);
+
+    const bodyParsed = await safeParseJson<any>(req);
+    if (!bodyParsed.success || !bodyParsed.data) {
+      return NextResponse.json({ success: false, error: bodyParsed.error || 'Invalid request body' }, { status: 400 });
+    }
+    const { action, period, entries } = bodyParsed.data;
 
     if (!period) {
       return NextResponse.json({ success: false, error: 'period is required (YYYY-MM)' }, { status: 400 });
@@ -74,7 +82,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: false, error: 'Invalid action. Use action=upload or action=clear' }, { status: 400 });
   } catch (err: any) {
-    console.error('[gstr2b/POST]', err);
+    logger.error('[gstr2b/POST]', { route: '/api/gstr2b', err: String(err) });
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
 }

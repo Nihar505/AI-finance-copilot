@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getAuthContext, checkRoleAccess } from '@/lib/auth';
+import { getAuthContext, checkRoleAccess, assertTenantAccess } from '@/lib/auth';
 import { logAuditEvent } from '@/lib/auditLogger';
+import { safeParseJson } from '@/lib/security';
+import logger from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,6 +11,8 @@ export async function GET(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
     const orgId = auth.activeOrgId;
+    await assertTenantAccess(auth, orgId);
+
     const db = await getDb();
     const { searchParams } = new URL(req.url);
     const status = searchParams.get('status') || 'all';
@@ -38,28 +42,36 @@ export async function GET(req: NextRequest) {
     const res = await db.query(sql, params);
     return NextResponse.json({ success: true, orgId, exceptions: res.rows });
   } catch (error: any) {
-    console.error('Exceptions API Error:', error);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    logger.error('Exceptions GET error', { route: '/api/exceptions', err: String(error) });
+    const status = error.message?.includes('403 Forbidden') ? 403 : 500;
+    return NextResponse.json({ success: false, error: error.message }, { status });
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
+    const orgId = auth.activeOrgId;
+    await assertTenantAccess(auth, orgId);
+
     // RBAC: Only CA or Admin can resolve or dismiss risk exceptions
     const access = checkRoleAccess(auth, ['ca', 'admin']);
     if (!access.allowed) {
       return NextResponse.json({ success: false, error: access.reason }, { status: 403 });
     }
 
-    const orgId = auth.activeOrgId;
-    const db = await getDb();
-    const body = await req.json();
-    const { exceptionId, decision, notes = '' } = body;
+    const bodyParsed = await safeParseJson<any>(req);
+    if (!bodyParsed.success || !bodyParsed.data) {
+      return NextResponse.json({ success: false, error: bodyParsed.error || 'Invalid JSON body' }, { status: 400 });
+    }
+
+    const { exceptionId, decision, notes = '' } = bodyParsed.data;
 
     if (!exceptionId || !decision) {
       return NextResponse.json({ success: false, error: 'exceptionId and decision required' }, { status: 400 });
     }
+
+    const db = await getDb();
 
     const excRes = await db.query(`SELECT * FROM exceptions WHERE id = $1 AND org_id = $2;`, [exceptionId, orgId]);
     if (excRes.rows.length === 0) {
@@ -90,7 +102,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, message: `Exception marked as ${newStatus}` });
   } catch (error: any) {
-    console.error('Resolve Exception API Error:', error);
+    logger.error('Resolve Exception API Error:', { route: '/api/exceptions', err: String(error) });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
