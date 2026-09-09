@@ -179,6 +179,11 @@ button, input, select, textarea { font-family: inherit; }
   background: transparent;
 }
 
+.nav-item svg,
+.nav-item * {
+  pointer-events: none;
+}
+
 .nav-item:hover {
   color: var(--text-primary);
   background: var(--white-8);

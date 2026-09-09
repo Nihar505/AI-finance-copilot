@@ -22,7 +22,7 @@ const nextConfig = {
     // strict enough to block eval() and unauthorized external connections.
     const csp = [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline'",          // Next.js requires inline scripts
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",  // Next.js requires inline scripts and eval for dev hydration/HMR
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' https://fonts.gstatic.com",
       "img-src 'self' data:",
