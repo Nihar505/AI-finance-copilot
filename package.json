@@ -7,7 +7,10 @@
     "build": "next build",
     "start": "next start -p 3010",
     "lint": "next lint",
-    "test": "tsx --test --test-concurrency=1 tests/*.test.ts"
+    "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:backup": "tsx scripts/backup.ts",
+    "db:restore": "tsx scripts/restore.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.2.14",
