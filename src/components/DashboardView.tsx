@@ -81,21 +81,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const fmtF = (v: number) =>
     '₹' + Math.abs(v ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-  // Filtered transactions for stream
-  const filteredTxns = transactions.filter((t) => {
-    if (txnFilter === 'inflow') return t.type === 'credit';
-    if (txnFilter === 'outflow') return t.type === 'debit';
-    return true;
-  });
-
-  const displayTxns = filteredTxns.length > 0 ? filteredTxns.slice(0, 6) : [
+  const defaultTransactions = [
     { id: '1', date: '2024-10-02', counterparty: 'Amazon Web Services', category_name: 'Cloud Infrastructure', type: 'debit', amount: 42500, is_approved: true },
     { id: '2', date: '2024-10-03', counterparty: 'Zenith FinTech Solutions', category_name: 'Sales Revenue', type: 'credit', amount: 250000, is_approved: true },
     { id: '3', date: '2024-10-05', counterparty: 'WeWork India Management', category_name: 'Office Rent', type: 'debit', amount: 115000, is_approved: true },
-    { id: '4', date: '2024-10-10', counterparty: 'Staff Payroll Services', category_name: 'Salaries & Wages', type: 'debit', amount: 480000, is_approved: true },
-    { id: '5', date: '2024-10-12', counterparty: 'Uber India Systems', category_name: 'Conveyance & Travel', type: 'debit', amount: 3450, is_approved: false },
-    { id: '6', date: '2024-10-14', counterparty: 'Dell Enterprise India', category_name: 'Equipment & Computers', type: 'debit', amount: 165000, is_approved: true },
+    { id: '4', date: '2024-10-07', counterparty: 'Razorpay Settlements', category_name: 'Merchant Receipts', type: 'credit', amount: 145000, is_approved: true },
+    { id: '5', date: '2024-10-10', counterparty: 'Staff Payroll Services', category_name: 'Salaries & Wages', type: 'debit', amount: 480000, is_approved: true },
+    { id: '6', date: '2024-10-12', counterparty: 'Uber India Systems', category_name: 'Conveyance & Travel', type: 'debit', amount: 3450, is_approved: false },
+    { id: '7', date: '2024-10-14', counterparty: 'Dell Enterprise India', category_name: 'Equipment & Computers', type: 'debit', amount: 165000, is_approved: true },
+    { id: '8', date: '2024-10-15', counterparty: 'HDFC Bank Ltd', category_name: 'Interest & Other Income', type: 'credit', amount: 14500, is_approved: true },
+    { id: '9', date: '2024-10-18', counterparty: 'Apex Logistics Client Retainer', category_name: 'Client Advances & Receipts', type: 'credit', amount: 85000, is_approved: true },
   ];
+
+  const sourceTxns = transactions && transactions.length > 0 ? transactions : defaultTransactions;
+
+  // Filtered transactions for stream
+  const filteredTxns = sourceTxns.filter((t) => {
+    const type = (t.type || '').toLowerCase();
+    if (txnFilter === 'inflow') return type === 'credit';
+    if (txnFilter === 'outflow') return type === 'debit';
+    return true;
+  });
+
+  const displayTxns = filteredTxns.slice(0, 6);
 
   const approvalRate = kpis.totalTransactions > 0
     ? Math.round((kpis.approvedCount / kpis.totalTransactions) * 100)
@@ -614,82 +622,98 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           {/* List of Transactions */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {displayTxns.map((t, idx) => {
-              const isCredit = t.type === 'credit';
-              const initials = (t.counterparty || 'TX')
-                .split(' ')
-                .map((w: string) => w[0])
-                .slice(0, 2)
-                .join('')
-                .toUpperCase();
+            {displayTxns.length === 0 ? (
+              <div
+                style={{
+                  padding: '32px 16px',
+                  textAlign: 'center',
+                  color: 'var(--text-muted)',
+                  fontSize: '12px',
+                  borderRadius: 'var(--r-md)',
+                  background: 'rgba(255, 255, 255, 0.02)',
+                  border: '1px dashed var(--border)',
+                }}
+              >
+                No {txnFilter === 'inflow' ? 'inflow' : txnFilter === 'outflow' ? 'outflow' : ''} transactions recorded.
+              </div>
+            ) : (
+              displayTxns.map((t, idx) => {
+                const isCredit = (t.type || '').toLowerCase() === 'credit';
+                const initials = (t.counterparty || 'TX')
+                  .split(' ')
+                  .map((w: string) => w[0])
+                  .slice(0, 2)
+                  .join('')
+                  .toUpperCase();
 
-              return (
-                <div
-                  key={t.id || idx}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '10px 12px',
-                    borderRadius: 'var(--r-md)',
-                    background: 'rgba(255, 255, 255, 0.02)',
-                    border: '1px solid var(--border)',
-                    transition: 'background 0.12s ease',
-                  }}
-                >
-                  {/* Left: Avatar & Details */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <div
-                      style={{
-                        width: '32px',
-                        height: '32px',
-                        borderRadius: '50%',
-                        background: '#18181b',
-                        border: '1px solid var(--border-strong)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontSize: '10px',
-                        fontWeight: 700,
-                        color: '#ffffff',
-                      }}
-                    >
-                      {initials}
+                return (
+                  <div
+                    key={t.id || idx}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '10px 12px',
+                      borderRadius: 'var(--r-md)',
+                      background: 'rgba(255, 255, 255, 0.02)',
+                      border: '1px solid var(--border)',
+                      transition: 'background 0.12s ease',
+                    }}
+                  >
+                    {/* Left: Avatar & Details */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div
+                        style={{
+                          width: '32px',
+                          height: '32px',
+                          borderRadius: '50%',
+                          background: '#18181b',
+                          border: '1px solid var(--border-strong)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '10px',
+                          fontWeight: 700,
+                          color: '#ffffff',
+                        }}
+                      >
+                        {initials}
+                      </div>
+
+                      <div>
+                        <div style={{ fontSize: '12.5px', fontWeight: 600, color: '#ffffff' }}>
+                          {t.counterparty || 'Counterparty Unassigned'}
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                          {t.date ? new Date(t.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—'} · {t.category_name || (isCredit ? 'Revenue & Inflows' : 'Operating Expense')}
+                        </div>
+                      </div>
                     </div>
 
-                    <div>
-                      <div style={{ fontSize: '12.5px', fontWeight: 600, color: '#ffffff' }}>
-                        {t.counterparty || 'Counterparty Unassigned'}
+                    {/* Right: Status & Colored Amount */}
+                    <div style={{ textAlign: 'right' }}>
+                      <div
+                        className={isCredit ? 'amount-positive' : 'amount-negative'}
+                        style={{ fontSize: '13px', fontWeight: 600 }}
+                      >
+                        {isCredit ? '+' : '−'}{fmtF(t.amount)}
                       </div>
-                      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                        {new Date(t.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} · {t.category_name || 'Operating Expense'}
+                      <div>
+                        {t.is_approved ? (
+                          <span className="pill pill-approved" style={{ fontSize: '9px', padding: '1px 6px' }}>
+                            Approved
+                          </span>
+                        ) : (
+                          <span className="pill pill-pending" style={{ fontSize: '9px', padding: '1px 6px' }}>
+                            Pending CA
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
-
-                  {/* Right: Status & Colored Amount */}
-                  <div style={{ textAlign: 'right' }}>
-                    <div
-                      className={isCredit ? 'amount-positive' : 'amount-negative'}
-                      style={{ fontSize: '13px', fontWeight: 600 }}
-                    >
-                      {isCredit ? '+' : '−'}{fmtF(t.amount)}
-                    </div>
-                    <div>
-                      {t.is_approved ? (
-                        <span className="pill pill-approved" style={{ fontSize: '9px', padding: '1px 6px' }}>
-                          Approved
-                        </span>
-                      ) : (
-                        <span className="pill pill-pending" style={{ fontSize: '9px', padding: '1px 6px' }}>
-                          Pending CA
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
 
           <div style={{ marginTop: '14px', textAlign: 'center' }}>

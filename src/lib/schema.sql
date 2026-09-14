@@ -214,6 +214,21 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Public, consented design-partner applications. This is deliberately kept
+-- separate from customer financial data and contains only sales-contact data.
+CREATE TABLE IF NOT EXISTS pilot_requests (
+    id VARCHAR(80) PRIMARY KEY,
+    name VARCHAR(120) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    organization_name VARCHAR(255) NOT NULL,
+    customer_profile VARCHAR(60) NOT NULL,
+    client_volume VARCHAR(60) NOT NULL,
+    message TEXT,
+    consent_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(30) NOT NULL DEFAULT 'new',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Indices for rapid reconciliation, review filtering, and query execution
 CREATE INDEX IF NOT EXISTS idx_transactions_org_date ON transactions(org_id, date);
 CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(org_id, status);
@@ -222,6 +237,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_org_status ON invoices(org_id, status);
 CREATE INDEX IF NOT EXISTS idx_bills_org_status ON bills(org_id, status);
 CREATE INDEX IF NOT EXISTS idx_exceptions_org_status ON exceptions(org_id, status);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(org_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_pilot_requests_created ON pilot_requests(created_at DESC);
 
 -- ── Milestone 12: Compliance Calendar ────────────────────────────────────────
 -- Tracks Indian statutory filings: GST, TDS, Advance Tax, ROC.

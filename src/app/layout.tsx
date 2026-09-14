@@ -1,9 +1,10 @@
 import type { Metadata } from 'next';
 import '@/styles/globals.css';
+import '@/styles/marketing.css';
 
 export const metadata: Metadata = {
-  title: 'AI Finance & Compliance Copilot',
-  description: 'AI handles repetitive financial operations; deterministic rules handle calculations; Chartered Accountants approve consequential ledger actions.',
+  title: 'FinCopilot | Controlled financial close for CA firms',
+  description: 'An evidence-backed monthly-close workspace for Indian Chartered Accountants and finance teams.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

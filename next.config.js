@@ -22,11 +22,12 @@ const nextConfig = {
     // strict enough to block eval() and unauthorized external connections.
     const csp = [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",  // Next.js requires inline scripts and eval for dev hydration/HMR
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://code.iconify.design https://cdnjs.cloudflare.com",  // Next.js dev hydration + Gateway Flow animations
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' https://fonts.gstatic.com",
-      "img-src 'self' data:",
+      "img-src 'self' data: https://images.unsplash.com https://cdn.21st.dev",
       "connect-src 'self' https://generativelanguage.googleapis.com https://hooks.slack.com",
+      "frame-src 'self' data: blob:",
       "frame-ancestors 'none'",                      // Equivalent to X-Frame-Options: DENY
     ].join('; ');
 

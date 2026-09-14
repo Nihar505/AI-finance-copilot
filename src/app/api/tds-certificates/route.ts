@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthContext, assertTenantAccess } from '@/lib/auth';
+import { getAuthContext, assertTenantAccess, checkRoleAccess } from '@/lib/auth';
 import { getDb } from '@/lib/db';
 import { safeParseJson } from '@/lib/security';
 import logger from '@/lib/logger';
@@ -214,7 +214,8 @@ export async function POST(req: NextRequest) {
 
     // RBAC check: Only CA or Admin can sign off on tax certificates
     if (action === 'sign_off') {
-      if (auth.role === 'business_owner') {
+      const access = checkRoleAccess(auth, ['CA', 'FIRM_ADMIN']);
+      if (!access.allowed) {
         return NextResponse.json(
           { success: false, error: 'Access Denied: Chartered Accountant sign-off authority required for Form 16A.' },
           { status: 403 }

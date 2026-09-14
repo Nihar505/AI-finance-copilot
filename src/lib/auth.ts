@@ -1,18 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { getDb } from './db';
+import { normalizeRole } from './permissions';
 
-export type UserRole = 'business_owner' | 'ca' | 'admin';
+export type UserRole = 'CA' | 'BUSINESS_OWNER' | 'FIRM_ADMIN';
+export type LegacyRole = 'ca' | 'business_owner' | 'admin';
+export type AnyRole = UserRole | LegacyRole;
+
+export { normalizeRole } from './permissions';
 
 export interface AuthContext {
   userId: string;
   userName: string;
   userEmail: string;
-  role: UserRole;
+  role: UserRole | LegacyRole;
   activeOrgId: string;
   activeOrgName?: string;
   materialityThreshold?: number;
   suggestOnlyMode?: boolean;
+  isAuthenticated?: boolean;
 }
 
 export interface OrganizationInfo {
@@ -23,14 +29,14 @@ export interface OrganizationInfo {
   currency: string;
   materiality_threshold: number;
   suggest_only_mode: boolean;
-  role: UserRole;
+  role: UserRole | string;
 }
 
 export interface SessionPayload {
   userId: string;
   userName: string;
   userEmail: string;
-  role: UserRole;
+  role: UserRole | string;
   orgId: string;
   exp: number; // Unix epoch ms
 }
@@ -123,9 +129,9 @@ export function hashPassword(password: string, salt = 'salt_copilot_2026'): stri
 export function verifyPassword(password: string, storedHash: string): boolean {
   // Support demo seeded hashes
   if (storedHash.startsWith('$2a$10$demoHashedPassword')) {
-    if (storedHash.includes('SeniorCA') && password === 'ApexCA@2026!') return true;
-    if (storedHash.includes('Owner') && password === 'ZenithOwner@2026!') return true;
-    if (storedHash.includes('Admin') && password === 'AdminSecure@2026!') return true;
+    if (storedHash.includes('SeniorCA') && (password === 'ApexCA@2026!' || password === 'password123')) return true;
+    if (storedHash.includes('Owner') && (password === 'ZenithOwner@2026!' || password === 'password123')) return true;
+    if (storedHash.includes('Admin') && (password === 'AdminSecure@2026!' || password === 'password123')) return true;
     // Also allow easy dev password
     if (password === 'password123') return true;
   }
@@ -139,6 +145,9 @@ export function verifyPassword(password: string, storedHash: string): boolean {
  * 1. Cryptographic session cookie ('copilot_session') or Authorization Bearer header.
  * 2. If unauthenticated in development/testing, falls back gracefully to headers or defaults,
  *    while still enforcing strict tenant boundaries.
+ * 
+ * SECURITY: If verifiedSession exists, effectiveRole is AUTHORITATIVE from the session.
+ * Headers like x-user-role are completely ignored when a session is active.
  */
 export async function getAuthContext(req?: NextRequest): Promise<AuthContext> {
   const db = await getDb();
@@ -166,17 +175,25 @@ export async function getAuthContext(req?: NextRequest): Promise<AuthContext> {
   }
 
   // 3. Resolve Role and User
-  let effectiveRole: UserRole = verifiedSession
-    ? verifiedSession.role
-    : (req?.headers.get('x-user-role') as UserRole) || 'ca';
+  let effectiveRole: UserRole;
+  let effectiveUserId: string;
+  let effectiveUserName: string;
+  let effectiveUserEmail: string;
 
-  if (effectiveRole !== 'ca' && effectiveRole !== 'business_owner' && effectiveRole !== 'admin') {
-    effectiveRole = 'ca';
+  if (verifiedSession) {
+    // SESSION IS SOURCE OF TRUTH: Never allow client headers to override verified session
+    effectiveRole = normalizeRole(verifiedSession.role);
+    effectiveUserId = verifiedSession.userId;
+    effectiveUserName = verifiedSession.userName;
+    effectiveUserEmail = verifiedSession.userEmail;
+  } else {
+    // Fallback for unauthenticated dev/test requests
+    const rawRole = req?.headers.get('x-user-role');
+    effectiveRole = rawRole ? normalizeRole(rawRole) : 'CA';
+    effectiveUserId = req?.headers.get('x-user-id') || 'user-lead-ca';
+    effectiveUserName = '';
+    effectiveUserEmail = '';
   }
-
-  let effectiveUserId = verifiedSession ? verifiedSession.userId : req?.headers.get('x-user-id');
-  let effectiveUserName = verifiedSession ? verifiedSession.userName : '';
-  let effectiveUserEmail = verifiedSession ? verifiedSession.userEmail : '';
 
   // 4. Verify organization exists
   const orgRes = await db.query(
@@ -208,17 +225,17 @@ export async function getAuthContext(req?: NextRequest): Promise<AuthContext> {
   // 5. Populate default profile names if not coming from session
   if (!effectiveUserName) {
     const userMap: Record<UserRole, { id: string; name: string; email: string }> = {
-      ca: {
+      CA: {
         id: effectiveUserId || 'user-lead-ca',
         name: 'Priya Sharma, FCA',
         email: 'priya.sharma@apexadvisory.com'
       },
-      business_owner: {
+      BUSINESS_OWNER: {
         id: effectiveUserId || 'user-business-owner',
         name: 'Rajesh Gupta (MD & Founder)',
         email: 'rajesh.gupta@zenithtech.io'
       },
-      admin: {
+      FIRM_ADMIN: {
         id: effectiveUserId || 'user-admin',
         name: 'Vikram Seth (System Admin)',
         email: 'admin@financecopilot.internal'
@@ -238,7 +255,8 @@ export async function getAuthContext(req?: NextRequest): Promise<AuthContext> {
     activeOrgId: orgId || DEFAULT_ORG_ID,
     activeOrgName: org.name,
     materialityThreshold: Number(org.materiality_threshold || 50000.00),
-    suggestOnlyMode: org.suggest_only_mode !== false
+    suggestOnlyMode: org.suggest_only_mode !== false,
+    isAuthenticated: verifiedSession !== null
   };
 }
 
@@ -248,11 +266,18 @@ export async function getAuthContext(req?: NextRequest): Promise<AuthContext> {
  * Business owners can strictly only access their own organization.
  */
 export async function assertTenantAccess(auth: AuthContext, targetOrgId: string): Promise<void> {
-  if (auth.role === 'admin') return; // Admins have global maintenance rights
-  if (auth.activeOrgId === targetOrgId) return;
+  // In production every data access must originate from a verified session.  The
+  // development/test fallback in getAuthContext exists solely for local fixtures.
+  if (process.env.NODE_ENV === 'production' && !auth.isAuthenticated) {
+    throw new Error('401 Unauthorized: Authentication required.');
+  }
+
+  const normRole = normalizeRole(auth.role);
+  if (normRole === 'FIRM_ADMIN') return; // Admins have global maintenance rights
 
   const db = await getDb();
-  // Check user_organizations membership
+  // Never trust auth.activeOrgId here: it can be selected through a request
+  // header for an authorized CA client switch.  Membership is the authority.
   const membership = await db.query(
     `SELECT 1 FROM user_organizations WHERE user_id = $1 AND org_id = $2;`,
     [auth.userId, targetOrgId]
@@ -267,8 +292,11 @@ export async function assertTenantAccess(auth: AuthContext, targetOrgId: string)
  * Role-Based Access Control (RBAC) assertion guard.
  * Strictly prevents non-authorized roles from performing consequential actions.
  */
-export function checkRoleAccess(auth: AuthContext, allowedRoles: UserRole[]): { allowed: boolean; reason?: string } {
-  if (!allowedRoles.includes(auth.role)) {
+export function checkRoleAccess(auth: AuthContext, allowedRoles: (UserRole | string)[]): { allowed: boolean; reason?: string } {
+  const normUserRole = normalizeRole(auth.role);
+  const normAllowedRoles = allowedRoles.map(r => normalizeRole(r));
+
+  if (!normAllowedRoles.includes(normUserRole)) {
     return {
       allowed: false,
       reason: `Access Denied: Action requires role [${allowedRoles.join(' or ')}]. Current role is [${auth.role}]. Under statutory compliance guidelines, business owners cannot unilaterally approve or post ledger adjustments without CA review.`
@@ -281,32 +309,34 @@ export function checkRoleAccess(auth: AuthContext, allowedRoles: UserRole[]): { 
  * Retrieves all accessible organizations for the active user.
  * CAs/Admins can see their full client portfolio; Business Owners are strictly limited to their own org.
  */
-export async function getAccessibleOrganizations(userId?: string, userRole?: UserRole): Promise<OrganizationInfo[]> {
+export async function getAccessibleOrganizations(userId?: string, userRole?: UserRole | string): Promise<OrganizationInfo[]> {
   const db = await getDb();
+  const normRole = userRole ? normalizeRole(userRole) : undefined;
   
-  if (userRole === 'business_owner' && userId) {
+  // A CA can work across a portfolio, but only across organizations explicitly
+  // assigned to that user. Firm admins retain their separate global maintenance
+  // role below.
+  if (userId && normRole !== 'FIRM_ADMIN') {
     const res = await db.query(
       `SELECT o.id, o.name, o.legal_name, o.tax_id, o.currency, 
               COALESCE(o.materiality_threshold, 50000.00) as materiality_threshold,
               COALESCE(o.suggest_only_mode, TRUE) as suggest_only_mode
        FROM organizations o
-       JOIN users u ON u.org_id = o.id
-       WHERE u.id = $1
+       JOIN user_organizations uo ON uo.org_id = o.id
+       WHERE uo.user_id = $1
        ORDER BY o.name ASC;`,
       [userId]
     );
-    if (res.rows.length > 0) {
-      return res.rows.map(r => ({
-        id: r.id,
-        name: r.name,
-        legal_name: r.legal_name || r.name,
-        tax_id: r.tax_id || '',
-        currency: r.currency || 'INR',
-        materiality_threshold: Number(r.materiality_threshold),
-        suggest_only_mode: Boolean(r.suggest_only_mode),
-        role: 'business_owner' as UserRole
-      }));
-    }
+    return res.rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      legal_name: r.legal_name || r.name,
+      tax_id: r.tax_id || '',
+      currency: r.currency || 'INR',
+      materiality_threshold: Number(r.materiality_threshold),
+      suggest_only_mode: Boolean(r.suggest_only_mode),
+      role: (normRole || 'CA') as UserRole
+    }));
   }
 
   const res = await db.query(
@@ -325,7 +355,6 @@ export async function getAccessibleOrganizations(userId?: string, userRole?: Use
     currency: r.currency || 'INR',
     materiality_threshold: Number(r.materiality_threshold),
     suggest_only_mode: Boolean(r.suggest_only_mode),
-    role: (userRole || 'ca') as UserRole
+    role: (normRole || 'CA') as UserRole
   }));
 }
-

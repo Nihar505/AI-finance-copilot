@@ -4,8 +4,10 @@ import {
   CheckCircle, 
   Download, 
   Sparkles,
-  ArrowRight
+  ArrowRight,
+  Radio
 } from 'lucide-react';
+import GatewayFlowDemo from '@/components/ui/demo';
 
 interface UploadViewProps {
   onUploadFile: (file: File, fileType: string) => Promise<{ success: boolean; rowCount?: number; message?: string }>;
@@ -229,6 +231,25 @@ DELL-CORP-771,Dell India Enterprise Pvt Ltd,2024-10-14,2024-10-28,165000.00,2516
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Automated Banking & Protocol Gateway Uplink */}
+      <div className="panel" style={{ marginTop: '20px' }}>
+        <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Radio size={16} color="#ffffff" className="animate-pulse" />
+              <h2 className="panel-title">Nexus Banking & ERP Gateway Uplink</h2>
+            </div>
+            <p className="panel-subtitle">
+              Live telemetry and automated gateway uplink connecting core banking protocols, ERPs (SAP, Tally, Zoho), and payment rails.
+            </p>
+          </div>
+        </div>
+
+        <div style={{ marginTop: '16px', borderRadius: '12px', overflow: 'hidden' }}>
+          <GatewayFlowDemo />
         </div>
       </div>
     </div>

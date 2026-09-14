@@ -11,6 +11,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      isAuthenticated: auth.isAuthenticated,
       user: {
         id: auth.userId,
         name: auth.userName,

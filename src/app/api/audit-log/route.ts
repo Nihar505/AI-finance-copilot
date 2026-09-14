@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getAuthContext, assertTenantAccess } from '@/lib/auth';
+import { getAuthContext, assertTenantAccess, checkRoleAccess } from '@/lib/auth';
 import logger from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
@@ -8,6 +8,10 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
+    const access = checkRoleAccess(auth, ['CA', 'FIRM_ADMIN']);
+    if (!access.allowed) {
+      return NextResponse.json({ success: false, error: access.reason }, { status: 403 });
+    }
     const orgId = auth.activeOrgId;
     await assertTenantAccess(auth, orgId);
 

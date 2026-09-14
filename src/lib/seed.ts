@@ -1,4 +1,5 @@
 import { getDb } from './db';
+import { hashPassword } from './auth';
 
 export const ORG_ID = 'org-apex-01';
 export const ORG_ZENITH_ID = 'org-zenith-02';
@@ -82,30 +83,50 @@ export async function seedBaseData() {
   );
 
   // 2. Users & Multi-Tenant Roles
+  // Hash demo passwords using the same PBKDF2-SHA512 mechanism as production users
+  const demoCAHash = hashPassword('DemoCA@12345');
+  const demoOwnerHash = hashPassword('DemoOwner@12345');
+  const demoAdminHash = hashPassword('DemoAdmin@12345');
+
   await db.query(
     `INSERT INTO users (id, org_id, name, email, role, password_hash)
      VALUES 
-       ('user-lead-ca', $1, 'Priya Sharma, FCA', 'priya.sharma@apexadvisory.com', 'ca', '$2a$10$demoHashedPasswordSeniorCA12345'),
-       ('user-business-owner', $2, 'Rajesh Gupta (Founder)', 'rajesh.gupta@zenithtech.io', 'business_owner', '$2a$10$demoHashedPasswordOwner12345'),
-       ('user-admin', $1, 'Vikram Seth (Admin)', 'admin@financecopilot.internal', 'admin', '$2a$10$demoHashedPasswordAdmin12345')
+       ('user-lead-ca', $1, 'Priya Sharma, FCA', 'priya.sharma@apexadvisory.com', 'CA', '$2a$10$demoHashedPasswordSeniorCA12345'),
+       ('user-business-owner', $2, 'Rajesh Gupta (Founder)', 'rajesh.gupta@zenithtech.io', 'BUSINESS_OWNER', '$2a$10$demoHashedPasswordOwner12345'),
+       ('user-admin', $1, 'Vikram Seth (Admin)', 'admin@financecopilot.internal', 'FIRM_ADMIN', '$2a$10$demoHashedPasswordAdmin12345'),
+       ('user-demo-ca', $1, 'Demo CA', 'demo.ca@example.com', 'CA', $3),
+       ('user-demo-owner', $2, 'Demo Business Owner', 'demo.owner@example.com', 'BUSINESS_OWNER', $4),
+       ('user-demo-admin', $1, 'Demo Firm Admin', 'demo.admin@example.com', 'FIRM_ADMIN', $5)
      ON CONFLICT (id) DO UPDATE SET
        name = EXCLUDED.name,
-       role = EXCLUDED.role;`,
-    [ORG_ID, ORG_ZENITH_ID]
+       email = EXCLUDED.email,
+       role = EXCLUDED.role,
+       password_hash = EXCLUDED.password_hash;`,
+    [ORG_ID, ORG_ZENITH_ID, demoCAHash, demoOwnerHash, demoAdminHash]
   );
 
   // User-Organization mappings (for CA portfolio management)
   await db.query(
     `INSERT INTO user_organizations (user_id, org_id, role)
      VALUES
-       ('user-lead-ca', $1, 'ca'),
-       ('user-lead-ca', $2, 'ca'),
-       ('user-business-owner', $2, 'business_owner'),
-       ('user-admin', $1, 'admin'),
-       ('user-admin', $2, 'admin')
-     ON CONFLICT (user_id, org_id) DO NOTHING;`,
+       ('user-lead-ca', $1, 'CA'),
+       ('user-lead-ca', $2, 'CA'),
+       ('user-business-owner', $2, 'BUSINESS_OWNER'),
+       ('user-admin', $1, 'FIRM_ADMIN'),
+       ('user-admin', $2, 'FIRM_ADMIN'),
+       ('user-demo-ca', $1, 'CA'),
+       ('user-demo-ca', $2, 'CA'),
+       ('user-demo-owner', $2, 'BUSINESS_OWNER'),
+       ('user-demo-admin', $1, 'FIRM_ADMIN'),
+       ('user-demo-admin', $2, 'FIRM_ADMIN')
+     ON CONFLICT (user_id, org_id) DO UPDATE SET role = EXCLUDED.role;`,
     [ORG_ID, ORG_ZENITH_ID]
   );
+
+  // Demo CA Firm relationship:
+  //   Demo CA       → Apex Global Advisory (org-apex-01) + Zenith Tech Labs (org-zenith-02)
+  //   Demo Owner    → Zenith Tech Labs (org-zenith-02)
+  //   Demo Admin    → Apex Global Advisory (org-apex-01) + Zenith Tech Labs (org-zenith-02)
 
   // 3. Bank Accounts
   await db.query(

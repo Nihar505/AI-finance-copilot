@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
-    const orgs = await getAccessibleOrganizations(auth.userId);
+    const orgs = await getAccessibleOrganizations(auth.userId, auth.role);
     return NextResponse.json({ success: true, organizations: orgs });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

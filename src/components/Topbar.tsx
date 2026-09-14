@@ -11,19 +11,21 @@ import {
   Plus, 
   Check, 
   Eye, 
-  SlidersHorizontal 
+  SlidersHorizontal,
+  LogOut
 } from 'lucide-react';
 import { UserRole, OrganizationInfo } from '@/lib/auth';
+import { normalizeRole } from '@/lib/permissions';
 
 interface TopbarProps {
   activeTab: string;
   activeOrgId: string;
   organizations: OrganizationInfo[];
-  currentRole: UserRole;
+  currentRole: UserRole | string;
   materialityThreshold: number;
   suggestOnlyMode: boolean;
   onSwitchOrg: (orgId: string) => void;
-  onSwitchRole: (role: UserRole) => void;
+  onSwitchRole?: (role: UserRole) => void;
   onNewOrg: (orgData: { name: string; legalName: string; taxId: string; materialityThreshold: number }) => void;
   onRefresh: () => void;
   onLoadSeed: () => void;
@@ -44,19 +46,19 @@ const tabTitles: Record<string, { label: string; sub: string }> = {
 };
 
 const roleDetails: Record<UserRole, { label: string; badge: string; subtitle: string; icon: any }> = {
-  ca: {
+  CA: {
     label: 'Senior CA / Reviewer',
     badge: 'CA Verified',
     subtitle: 'Full Approval & Ledger Override Authority',
     icon: Briefcase
   },
-  business_owner: {
+  BUSINESS_OWNER: {
     label: 'Business Owner',
     badge: 'Executive View',
     subtitle: 'Insight-First · Approvals Guarded (4-Eyes Principle)',
     icon: Eye
   },
-  admin: {
+  FIRM_ADMIN: {
     label: 'Firm Administrator',
     badge: 'Admin',
     subtitle: 'System Config · Client Portfolio Onboarding',
@@ -134,7 +136,17 @@ export const Topbar: React.FC<TopbarProps> = ({
     setOrgDropdownOpen(false);
   };
 
-  const ActiveRoleIcon = roleDetails[currentRole].icon;
+  const normRole = normalizeRole(currentRole);
+  const roleDetail = roleDetails[normRole] || roleDetails.CA;
+  const ActiveRoleIcon = roleDetail.icon;
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } finally {
+      window.location.href = '/login';
+    }
+  };
 
   return (
     <header className="topbar">
@@ -286,89 +298,35 @@ export const Topbar: React.FC<TopbarProps> = ({
           <div className="toast-chip" style={{ animation: 'fadeIn 0.2s ease' }}>{toastMessage}</div>
         )}
 
-        {/* Role / Persona Switcher */}
-        <div className="role-switcher-container" ref={roleRef} style={{ position: 'relative' }}>
-          <button
-            className="role-switcher-btn"
-            onClick={() => setRoleDropdownOpen(!roleDropdownOpen)}
-            title="Switch User Role Persona"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              background: currentRole === 'ca' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(255, 255, 255, 0.06)',
-              border: `1px solid ${currentRole === 'ca' ? 'rgba(34, 197, 94, 0.3)' : 'rgba(255, 255, 255, 0.15)'}`,
-              borderRadius: '20px',
-              padding: '4px 11px',
-              fontSize: '11.5px',
-              color: '#ffffff',
-              cursor: 'pointer'
-            }}
-          >
-            <ActiveRoleIcon size={12} style={{ color: currentRole === 'ca' ? '#22c55e' : '#a1a1aa' }} />
-            <span style={{ fontWeight: 600 }}>{roleDetails[currentRole].badge}</span>
-            <ChevronDown size={11} style={{ color: '#71717a' }} />
-          </button>
-
-          {/* Role Dropdown */}
-          {roleDropdownOpen && (
-            <div
-              style={{
-                position: 'absolute',
-                top: 'calc(100% + 8px)',
-                right: 0,
-                width: '280px',
-                background: '#0d0d11',
-                border: '1px solid rgba(255, 255, 255, 0.16)',
-                borderRadius: '12px',
-                boxShadow: '0 12px 32px rgba(0,0,0,0.85)',
-                zIndex: 100,
-                padding: '8px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '4px'
-              }}
-            >
-              <div style={{ padding: '6px 10px', fontSize: '11px', fontWeight: 600, color: '#71717a', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                Select Active Persona
-              </div>
-
-              {(['ca', 'business_owner', 'admin'] as UserRole[]).map(r => {
-                const isSelected = currentRole === r;
-                const detail = roleDetails[r];
-                const Icon = detail.icon;
-
-                return (
-                  <button
-                    key={r}
-                    onClick={() => {
-                      onSwitchRole(r);
-                      setRoleDropdownOpen(false);
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '8px',
-                      padding: '8px 10px',
-                      borderRadius: '8px',
-                      background: isSelected ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
-                      border: isSelected ? '1px solid rgba(255, 255, 255, 0.15)' : '1px solid transparent',
-                      cursor: 'pointer',
-                      textAlign: 'left'
-                    }}
-                  >
-                    <Icon size={14} style={{ marginTop: '2px', color: isSelected ? '#22c55e' : '#a1a1aa' }} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ color: '#ffffff', fontWeight: 600, fontSize: '12px' }}>{detail.label}</div>
-                      <div style={{ color: '#71717a', fontSize: '10.5px', marginTop: '1px' }}>{detail.subtitle}</div>
-                    </div>
-                    {isSelected && <Check size={13} style={{ color: '#22c55e', marginTop: '2px' }} />}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+        {/* Authoritative Role Badge (Non-switchable) */}
+        <div 
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            background: normRole === 'CA' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(255, 255, 255, 0.06)',
+            border: `1px solid ${normRole === 'CA' ? 'rgba(34, 197, 94, 0.3)' : 'rgba(255, 255, 255, 0.15)'}`,
+            borderRadius: '20px',
+            padding: '5px 12px',
+            fontSize: '11.5px',
+            color: '#ffffff'
+          }}
+          title={roleDetail.subtitle}
+        >
+          <ActiveRoleIcon size={12} style={{ color: normRole === 'CA' ? '#22c55e' : '#a1a1aa' }} />
+          <span style={{ fontWeight: 600 }}>{roleDetail.badge}</span>
         </div>
+
+        {/* Explicit Sign Out */}
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={handleLogout}
+          title="Sign out of current workspace session"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 10px' }}
+        >
+          <LogOut size={12} />
+          <span>Sign Out</span>
+        </button>
 
         <button
           className="btn btn-secondary btn-sm"

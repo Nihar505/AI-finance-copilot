@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { createSessionToken, verifyPassword, SESSION_COOKIE_NAME, UserRole } from '@/lib/auth';
+import { createSessionToken, verifyPassword, SESSION_COOKIE_NAME, UserRole, normalizeRole } from '@/lib/auth';
 import { checkRateLimit, getClientIp } from '@/lib/rateLimiter';
 import { safeParseJson } from '@/lib/security';
 
@@ -18,74 +18,20 @@ export async function POST(req: NextRequest) {
   }
 
   // 2. Parse Request
-  const bodyParsed = await safeParseJson<{ email?: string; password?: string; persona?: UserRole }>(req);
+  const bodyParsed = await safeParseJson<{ email?: string; password?: string; role?: string }>(req);
   if (!bodyParsed.success || !bodyParsed.data) {
     return NextResponse.json({ success: false, error: bodyParsed.error || 'Invalid request body' }, { status: 400 });
   }
 
-  const { email, password, persona } = bodyParsed.data;
+  const { email, password, role } = bodyParsed.data;
   const db = await getDb();
 
-  // Persona quick-switch (for interactive prototyping & demo)
-  if (persona) {
-    const validPersonas: Record<UserRole, { id: string; name: string; email: string; orgId: string }> = {
-      ca: {
-        id: 'user-lead-ca',
-        name: 'Priya Sharma, FCA',
-        email: 'priya.sharma@apexadvisory.com',
-        orgId: 'org-apex-01'
-      },
-      business_owner: {
-        id: 'user-business-owner',
-        name: 'Rajesh Gupta (MD & Founder)',
-        email: 'rajesh.gupta@zenithtech.io',
-        orgId: 'org-zenith-02'
-      },
-      admin: {
-        id: 'user-admin',
-        name: 'Vikram Seth (System Admin)',
-        email: 'admin@financecopilot.internal',
-        orgId: 'org-apex-01'
-      }
-    };
-
-    const target = validPersonas[persona];
-    if (!target) {
-      return NextResponse.json({ success: false, error: `Invalid persona: ${persona}` }, { status: 400 });
-    }
-
-    const token = createSessionToken({
-      userId: target.id,
-      userName: target.name,
-      userEmail: target.email,
-      role: persona,
-      orgId: target.orgId
-    });
-
-    const response = NextResponse.json({
-      success: true,
-      user: { id: target.id, name: target.name, email: target.email, role: persona },
-      activeOrgId: target.orgId,
-      token
-    });
-
-    // Set secure HTTP-only cookie
-    response.cookies.set(SESSION_COOKIE_NAME, token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 24 * 60 * 60 // 24 hours
-    });
-
-    return response;
-  }
-
-  // Email / Password Login
+  // Email & Password are required
   if (!email || !password) {
-    return NextResponse.json({ success: false, error: 'Email and password are required' }, { status: 400 });
+    return NextResponse.json({ success: false, error: 'Invalid email or password.' }, { status: 400 });
   }
 
+  // 3. Database Lookup (Source of Truth)
   const userRes = await db.query(
     `SELECT u.id, u.org_id, u.name, u.email, u.role, u.password_hash, u.is_active, o.name as org_name
      FROM users u
@@ -96,19 +42,33 @@ export async function POST(req: NextRequest) {
 
   const user = userRes.rows[0];
   if (!user || !user.is_active) {
-    return NextResponse.json({ success: false, error: 'Invalid email or password' }, { status: 401 });
+    return NextResponse.json({ success: false, error: 'Invalid email or password.' }, { status: 401 });
   }
 
+  // Verify password hash
   const isPasswordValid = verifyPassword(password, user.password_hash);
   if (!isPasswordValid) {
-    return NextResponse.json({ success: false, error: 'Invalid email or password' }, { status: 401 });
+    return NextResponse.json({ success: false, error: 'Invalid email or password.' }, { status: 401 });
   }
 
+  // 4. Strict Role Verification: Backend is Authoritative
+  const authoritativeUserRole = normalizeRole(user.role);
+  if (role) {
+    const requestedRole = normalizeRole(role);
+    if (requestedRole !== authoritativeUserRole) {
+      return NextResponse.json(
+        { success: false, error: 'These credentials are not authorized for this access type.' },
+        { status: 401 }
+      );
+    }
+  }
+
+  // 5. Create Cryptographically Signed HMAC-SHA256 Session
   const token = createSessionToken({
     userId: user.id,
     userName: user.name,
     userEmail: user.email,
-    role: user.role as UserRole,
+    role: authoritativeUserRole,
     orgId: user.org_id
   });
 
@@ -118,18 +78,18 @@ export async function POST(req: NextRequest) {
       id: user.id,
       name: user.name,
       email: user.email,
-      role: user.role
+      role: authoritativeUserRole
     },
-    activeOrgId: user.org_id,
-    token
+    activeOrgId: user.org_id
   });
 
+  // 6. Set Secure HTTP-Only Cookie
   response.cookies.set(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
-    maxAge: 24 * 60 * 60
+    maxAge: 24 * 60 * 60 // 24 hours
   });
 
   return response;
