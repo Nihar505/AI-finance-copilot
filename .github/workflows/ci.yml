@@ -2,8 +2,8 @@
 # CI Pipeline — AI Finance & Compliance Copilot
 #
 # Runs on every push and pull request to main.
-# Gates: typecheck → lint → test → build
-# All four must pass; any failure blocks the merge.
+# Gates: typecheck → lint → test (PGlite & Real PostgreSQL 16) → build
+# All steps must pass; any failure blocks the merge.
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: CI
@@ -16,8 +16,23 @@ on:
 
 jobs:
   ci:
-    name: Typecheck · Lint · Test · Build
+    name: Typecheck · Lint · Test (PGlite & Postgres 16) · Build
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     strategy:
       matrix:
@@ -49,16 +64,22 @@ jobs:
       - name: Lint (next lint)
         run: npm run lint
 
-      # ── 6. Tests ─────────────────────────────────────────────────────────────
-      # Runs the full test suite using the embedded PGlite database.
-      # No external DB or secrets required — app auto-falls back to PGlite.
-      - name: Run tests
+      # ── 6. Tests (Embedded PGlite engine) ────────────────────────────────────
+      # Runs the full test suite using embedded PGlite database.
+      - name: Run tests (PGlite Engine)
         run: npm test
         env:
-          # Use test environment so logger is silent and no .env.local required
           NODE_ENV: test
 
-      # ── 7. Production build ───────────────────────────────────────────────────
+      # ── 7. Tests (Network-attached PostgreSQL 16 engine) ─────────────────────
+      # Runs the full test suite against real PostgreSQL container via DATABASE_URL.
+      - name: Run tests (Real PostgreSQL 16 Engine)
+        run: npm test
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgres://testuser:testpassword@localhost:5432/testdb?sslmode=disable
+
+      # ── 8. Production build ───────────────────────────────────────────────────
       # Verifies the app compiles successfully with zero type errors.
       # GEMINI_API_KEY is intentionally left unset — build must not require it.
       - name: Production build (next build)
