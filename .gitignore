@@ -32,3 +32,10 @@ next-env.d.ts
 
 # local embedded db
 /data/postgres
+
+# database backups and snapshots (contain sensitive client PAN/GSTIN/financial data)
+/backups/
+/data/backups/
+*.dump
+*.snapshot.json
+

@@ -68,3 +68,57 @@ jobs:
           # SESSION_SECRET required in production — use a dummy value for build verification only.
           # This is NOT a real secret; real secrets are injected by the hosting platform.
           SESSION_SECRET: ci-build-verification-dummy-secret-not-used-at-runtime
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Second job: run the full test suite against real PostgreSQL 16
+  # Purpose: surface behavioural differences between PGlite and real Postgres
+  # before they compound across later phases.
+  # ─────────────────────────────────────────────────────────────────────────────
+  test-postgres:
+    name: Test suite · PostgreSQL 16
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: copilot_test
+          POSTGRES_USER: copilot
+          POSTGRES_PASSWORD: copilot_test_pw
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run migrations against ephemeral Postgres
+        run: npm run db:migrate
+        env:
+          # Connects to the service container above.
+          # NOTE: The Postgres service container does NOT use TLS; the
+          # connection string uses ?sslmode=disable so the runner can
+          # talk to it. Real production DATABASE_URL must use sslmode=verify-full
+          # (enforced by rejectUnauthorized:true in db.ts).
+          DATABASE_URL: postgresql://copilot:copilot_test_pw@localhost:5432/copilot_test?sslmode=disable
+
+      - name: Run full test suite against PostgreSQL 16
+        run: npm test
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://copilot:copilot_test_pw@localhost:5432/copilot_test?sslmode=disable
+
