@@ -162,8 +162,8 @@ async function buildPgliteClient(): Promise<DbClient> {
 
   return {
     async query<T = any>(text: string, params?: any[]): Promise<QueryResult<T>> {
-      const res = await pglite.query<T>(text, params);
-      return { rows: res.rows, rowCount: res.rows?.length ?? 0 };
+      const res = await pglite.query(text, params);
+      return { rows: (res.rows ?? []) as T[], rowCount: res.rows?.length ?? 0 };
     },
 
     async exec(text: string): Promise<void> {
@@ -174,8 +174,8 @@ async function buildPgliteClient(): Promise<DbClient> {
       return await pglite.transaction(async (tx: any) => {
         const txClient: DbClient = {
           async query<R = any>(text: string, params?: any[]): Promise<QueryResult<R>> {
-            const res = await tx.query<R>(text, params);
-            return { rows: res.rows, rowCount: res.rows?.length ?? 0 };
+            const res = await tx.query(text, params);
+            return { rows: (res.rows ?? []) as R[], rowCount: res.rows?.length ?? 0 };
           },
           async exec(text: string): Promise<void> {
             await tx.exec(text);
