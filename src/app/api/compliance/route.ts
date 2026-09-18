@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getAuthContext } from '@/lib/auth';
+import { getAuthContext, assertTenantAccess, checkRoleAccess } from '@/lib/auth';
 import logger from '@/lib/logger';
 
 /**
@@ -147,6 +147,7 @@ async function seedComplianceCalendarIfEmpty(orgId: string): Promise<void> {
 export async function GET(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
+    await assertTenantAccess(auth, auth.activeOrgId);
     await seedComplianceCalendarIfEmpty(auth.activeOrgId);
 
     const db = await getDb();
@@ -195,13 +196,21 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: true, filings, summary });
   } catch (err: any) {
     logger.error('[compliance/GET]', { route: '/api/compliance', err: String(err) });
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    const status = err.message?.includes('403 Forbidden') ? 403 : err.message?.includes('401') ? 401 : 500;
+    return NextResponse.json({ success: false, error: err.message }, { status });
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
+    await assertTenantAccess(auth, auth.activeOrgId);
+
+    const access = checkRoleAccess(auth, ['ca', 'admin']);
+    if (!access.allowed) {
+      return NextResponse.json({ success: false, error: access.reason }, { status: 403 });
+    }
+
     const body = await req.json();
     const { id, status, reference_ack_number, notes, assigned_ca } = body;
 
@@ -257,6 +266,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, message: `Filing ${id} updated successfully` });
   } catch (err: any) {
     logger.error('[compliance/POST]', { route: '/api/compliance', err: String(err) });
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    const status = err.message?.includes('403 Forbidden') ? 403 : err.message?.includes('401') ? 401 : 500;
+    return NextResponse.json({ success: false, error: err.message }, { status });
   }
 }

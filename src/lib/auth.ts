@@ -117,37 +117,61 @@ export function verifySessionToken(token: string | null | undefined): SessionPay
 }
 
 /**
- * Deterministic password hashing using PBKDF2 with SHA-512.
+ * Hashes a password using PBKDF2 with SHA-512 and a random cryptographic salt.
+ * Returns standard format: pbkdf2$<iterations>$<saltHex>$<derivedKeyHex>
+ * For legacy deterministic compatibility (when salt is passed), uses supplied salt.
  */
-export function hashPassword(password: string, salt = 'salt_copilot_2026'): string {
-  return crypto.pbkdf2Sync(password, salt, 10000, 32, 'sha512').toString('hex');
+export function hashPassword(password: string, salt?: string, iterations = 100000): string {
+  if (salt) {
+    return crypto.pbkdf2Sync(password, salt, 10000, 32, 'sha512').toString('hex');
+  }
+  const randomSalt = crypto.randomBytes(16).toString('hex');
+  const derivedKey = crypto.pbkdf2Sync(password, randomSalt, iterations, 32, 'sha512').toString('hex');
+  return `pbkdf2$${iterations}$${randomSalt}$${derivedKey}`;
 }
 
 /**
- * Verifies a password against known hashes or PBKDF2 hashes.
+ * Strictly verifies a password against its stored cryptographic hash using timing-safe comparison.
+ * Zero backdoors or demo string bypasses.
  */
 export function verifyPassword(password: string, storedHash: string): boolean {
-  // Support demo seeded hashes
-  if (storedHash.startsWith('$2a$10$demoHashedPassword')) {
-    if (storedHash.includes('SeniorCA') && (password === 'ApexCA@2026!' || password === 'password123')) return true;
-    if (storedHash.includes('Owner') && (password === 'ZenithOwner@2026!' || password === 'password123')) return true;
-    if (storedHash.includes('Admin') && (password === 'AdminSecure@2026!' || password === 'password123')) return true;
-    // Also allow easy dev password
-    if (password === 'password123') return true;
+  if (!password || !storedHash) return false;
+
+  try {
+    if (storedHash.startsWith('pbkdf2$')) {
+      const parts = storedHash.split('$');
+      if (parts.length !== 4) return false;
+      const iterations = parseInt(parts[1], 10);
+      const salt = parts[2];
+      const expectedKey = parts[3];
+      if (isNaN(iterations) || !salt || !expectedKey) return false;
+
+      const derivedKey = crypto.pbkdf2Sync(password, salt, iterations, 32, 'sha512').toString('hex');
+      const a = Buffer.from(derivedKey, 'hex');
+      const b = Buffer.from(expectedKey, 'hex');
+      return a.length === b.length && crypto.timingSafeEqual(a, b);
+    }
+
+    // Legacy fixed-salt PBKDF2 verification (for existing test suites / pre-seeded hashes)
+    const computed = hashPassword(password, 'salt_copilot_2026');
+    const a = Buffer.from(computed, 'hex');
+    const b = Buffer.from(storedHash, 'hex');
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+      return true;
+    }
+
+    return false;
+  } catch {
+    return false;
   }
-  const computed = hashPassword(password);
-  return computed === storedHash;
 }
 
 /**
  * Resolves the authenticated user and active organization context.
  * Evaluates:
  * 1. Cryptographic session cookie ('copilot_session') or Authorization Bearer header.
- * 2. If unauthenticated in development/testing, falls back gracefully to headers or defaults,
- *    while still enforcing strict tenant boundaries.
- * 
- * SECURITY: If verifiedSession exists, effectiveRole is AUTHORITATIVE from the session.
- * Headers like x-user-role are completely ignored when a session is active.
+ * 2. Enforces strict tenant boundary validation on any requested orgId.
+ * 3. Never falls back to arbitrary organizations in production.
  */
 export async function getAuthContext(req?: NextRequest): Promise<AuthContext> {
   const db = await getDb();
@@ -168,83 +192,77 @@ export async function getAuthContext(req?: NextRequest): Promise<AuthContext> {
 
   const verifiedSession = token ? verifySessionToken(token) : null;
 
-  // 2. Resolve Active Organization ID
-  let orgId = req?.headers.get('x-org-id') || req?.nextUrl?.searchParams?.get('orgId');
-  if (!orgId) {
-    orgId = verifiedSession ? verifiedSession.orgId : DEFAULT_ORG_ID;
+  // In production, unauthenticated requests are strictly prohibited
+  if (process.env.NODE_ENV === 'production' && !verifiedSession) {
+    throw new Error('401 Unauthorized: Authentication required.');
   }
 
-  // 3. Resolve Role and User
+  // 2. Resolve Role, User and Requested Org
   let effectiveRole: UserRole;
   let effectiveUserId: string;
   let effectiveUserName: string;
   let effectiveUserEmail: string;
+  let requestedOrgId: string | null = null;
 
   if (verifiedSession) {
-    // SESSION IS SOURCE OF TRUTH: Never allow client headers to override verified session
     effectiveRole = normalizeRole(verifiedSession.role);
     effectiveUserId = verifiedSession.userId;
     effectiveUserName = verifiedSession.userName;
     effectiveUserEmail = verifiedSession.userEmail;
+    // Business owners are strictly locked to their own tenant; ignore any spoofed header or query params.
+    if (effectiveRole === 'BUSINESS_OWNER') {
+      requestedOrgId = verifiedSession.orgId;
+    } else {
+      requestedOrgId = req?.headers.get('x-org-id') || req?.nextUrl?.searchParams?.get('orgId') || verifiedSession.orgId;
+    }
   } else {
-    // Fallback for unauthenticated dev/test requests
+    // Development / test runner fallback
     const rawRole = req?.headers.get('x-user-role');
     effectiveRole = rawRole ? normalizeRole(rawRole) : 'CA';
     effectiveUserId = req?.headers.get('x-user-id') || 'user-lead-ca';
     effectiveUserName = '';
     effectiveUserEmail = '';
+    requestedOrgId = req?.headers.get('x-org-id') || req?.nextUrl?.searchParams?.get('orgId') || DEFAULT_ORG_ID;
   }
 
-  // 4. Verify organization exists
-  const orgRes = await db.query(
-    `SELECT id, name, legal_name, tax_id, materiality_threshold, suggest_only_mode 
-     FROM organizations WHERE id = $1;`,
-    [orgId]
-  );
+  const targetOrgId = requestedOrgId || DEFAULT_ORG_ID;
 
-  let org = orgRes.rows[0];
-  if (!org) {
-    const fallbackOrgRes = await db.query(
-      `SELECT id, name, legal_name, tax_id, materiality_threshold, suggest_only_mode 
-       FROM organizations ORDER BY created_at ASC LIMIT 1;`
+  // 3. Verify User Membership in Requested Organization (if authenticated)
+  if (effectiveRole !== 'FIRM_ADMIN' && effectiveUserId) {
+    const memRes = await db.query(
+      `SELECT 1 FROM user_organizations WHERE user_id = $1 AND org_id = $2;`,
+      [effectiveUserId, targetOrgId]
     );
-    if (fallbackOrgRes.rows.length > 0) {
-      org = fallbackOrgRes.rows[0];
-      orgId = org.id;
-    } else {
-      org = {
-        id: DEFAULT_ORG_ID,
-        name: 'Apex Global Advisory & Co.',
-        materiality_threshold: 50000.00,
-        suggest_only_mode: true
-      };
-      orgId = DEFAULT_ORG_ID;
+    if (memRes.rows.length === 0) {
+      throw new Error(`403 Forbidden: Tenant Isolation Violation. User [${effectiveUserId}] is not authorized to access organization [${targetOrgId}].`);
     }
   }
 
-  // 5. Populate default profile names if not coming from session
-  if (!effectiveUserName) {
-    const userMap: Record<UserRole, { id: string; name: string; email: string }> = {
-      CA: {
-        id: effectiveUserId || 'user-lead-ca',
-        name: 'Priya Sharma, FCA',
-        email: 'priya.sharma@apexadvisory.com'
-      },
-      BUSINESS_OWNER: {
-        id: effectiveUserId || 'user-business-owner',
-        name: 'Rajesh Gupta (MD & Founder)',
-        email: 'rajesh.gupta@zenithtech.io'
-      },
-      FIRM_ADMIN: {
-        id: effectiveUserId || 'user-admin',
-        name: 'Vikram Seth (System Admin)',
-        email: 'admin@financecopilot.internal'
-      }
-    };
-    const mapped = userMap[effectiveRole];
-    effectiveUserId = mapped.id;
-    effectiveUserName = mapped.name;
-    effectiveUserEmail = mapped.email;
+  // 4. Verify organization exists in database
+  const orgRes = await db.query(
+    `SELECT id, name, legal_name, tax_id, materiality_threshold, suggest_only_mode 
+     FROM organizations WHERE id = $1;`,
+    [targetOrgId]
+  );
+
+  const org = orgRes.rows[0];
+  if (!org) {
+    throw new Error(`404 Not Found: Organization [${targetOrgId}] does not exist.`);
+  }
+
+  // 5. Populate profile data if empty
+  if (!effectiveUserName && effectiveUserId) {
+    const userRes = await db.query(
+      `SELECT name, email, role FROM users WHERE id = $1;`,
+      [effectiveUserId]
+    );
+    if (userRes.rows.length > 0) {
+      effectiveUserName = userRes.rows[0].name;
+      effectiveUserEmail = userRes.rows[0].email;
+    } else {
+      effectiveUserName = 'Authorized User';
+      effectiveUserEmail = `${effectiveUserId}@financecopilot.internal`;
+    }
   }
 
   return {
@@ -252,7 +270,7 @@ export async function getAuthContext(req?: NextRequest): Promise<AuthContext> {
     userName: effectiveUserName,
     userEmail: effectiveUserEmail,
     role: effectiveRole,
-    activeOrgId: orgId || DEFAULT_ORG_ID,
+    activeOrgId: targetOrgId,
     activeOrgName: org.name,
     materialityThreshold: Number(org.materiality_threshold || 50000.00),
     suggestOnlyMode: org.suggest_only_mode !== false,

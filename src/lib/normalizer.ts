@@ -1,5 +1,6 @@
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
+import { isValidDate } from './security';
 
 export interface NormalizedTransaction {
   date: string; // YYYY-MM-DD
@@ -29,40 +30,62 @@ export interface NormalizedBill {
   tax_amount?: number;
 }
 
-// Clean date helper to YYYY-MM-DD
+/**
+ * Sanitizes input text against CSV / Excel formula injection (DDE / Command Execution).
+ * Neutralizes leading =, +, -, @, \t, \r characters.
+ */
+export function sanitizeFormulaInjection(field: string | null | undefined): string {
+  if (!field || typeof field !== 'string') return '';
+  const trimmed = field.trim();
+  if (/^[=+\-@\t\r%]/.test(trimmed)) {
+    return `'${trimmed}`;
+  }
+  return trimmed;
+}
+
+// Clean date helper to YYYY-MM-DD with strict calendar validation
 export function normalizeDate(rawDate: string | Date | number | undefined): string {
-  if (!rawDate) return new Date().toISOString().split('T')[0];
+  if (rawDate === undefined || rawDate === null || rawDate === '') {
+    return new Date().toISOString().split('T')[0];
+  }
+
+  let candidate: string | null = null;
 
   if (typeof rawDate === 'number') {
     // Excel serial date format
     const dateObj = new Date((rawDate - (25567 + 2)) * 86400 * 1000);
     if (!isNaN(dateObj.getTime())) {
-      return dateObj.toISOString().split('T')[0];
+      candidate = dateObj.toISOString().split('T')[0];
+    }
+  } else {
+    const str = String(rawDate).trim();
+    // Check ISO format YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+      candidate = str.substring(0, 10);
+    } else {
+      // Check DD/MM/YYYY or DD-MM-YYYY
+      const ddmmyyyy = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+      if (ddmmyyyy) {
+        const day = ddmmyyyy[1].padStart(2, '0');
+        const month = ddmmyyyy[2].padStart(2, '0');
+        const year = ddmmyyyy[3];
+        candidate = `${year}-${month}-${day}`;
+      } else {
+        // Check MM/DD/YYYY or other standard Date parse
+        const parsed = new Date(str);
+        if (!isNaN(parsed.getTime())) {
+          candidate = parsed.toISOString().split('T')[0];
+        }
+      }
     }
   }
 
-  const str = String(rawDate).trim();
-  // Check ISO format YYYY-MM-DD
-  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
-    return str.substring(0, 10);
+  if (candidate && isValidDate(candidate)) {
+    return candidate;
   }
 
-  // Check DD/MM/YYYY or DD-MM-YYYY
-  const ddmmyyyy = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-  if (ddmmyyyy) {
-    const day = ddmmyyyy[1].padStart(2, '0');
-    const month = ddmmyyyy[2].padStart(2, '0');
-    const year = ddmmyyyy[3];
-    return `${year}-${month}-${day}`;
-  }
-
-  // Check MM/DD/YYYY
-  const parsed = new Date(str);
-  if (!isNaN(parsed.getTime())) {
-    return parsed.toISOString().split('T')[0];
-  }
-
-  return new Date().toISOString().split('T')[0];
+  // Reject impossible or invalid calendar dates (e.g. 2024-02-31, 2023-02-29, 2024-04-31)
+  throw new Error(`Invalid or impossible date rejected: "${rawDate}". Valid calendar date required.`);
 }
 
 // Clean amount helper
@@ -114,7 +137,9 @@ export function parseBankStatement(fileBuffer: Buffer | string, filename: string
     rows = result.data as any[];
   }
 
-  return rows.map((row) => {
+  const results: NormalizedTransaction[] = [];
+
+  for (const row of rows) {
     // Find keys regardless of case
     const keys = Object.keys(row);
     const findKey = (patterns: string[]) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p.toLowerCase())));
@@ -127,9 +152,15 @@ export function parseBankStatement(fileBuffer: Buffer | string, filename: string
     const refKey = findKey(['ref', 'reference', 'chq', 'utr', 'txn id']);
     const counterpartyKey = findKey(['counterparty', 'beneficiary', 'party', 'merchant', 'vendor', 'customer']);
 
-    const rawDesc = descKey ? String(row[descKey]).trim() : 'Transaction';
-    const date = normalizeDate(dateKey ? row[dateKey] : undefined);
-    const ref = refKey ? String(row[refKey]).trim() : undefined;
+    let date: string;
+    try {
+      date = normalizeDate(dateKey ? row[dateKey] : undefined);
+    } catch {
+      continue;
+    }
+
+    const rawDesc = sanitizeFormulaInjection(descKey ? String(row[descKey]).trim() : 'Transaction');
+    const ref = refKey ? sanitizeFormulaInjection(String(row[refKey]).trim()) : undefined;
 
     let amount = 0;
     let type: 'credit' | 'debit' = 'debit';
@@ -150,11 +181,13 @@ export function parseBankStatement(fileBuffer: Buffer | string, filename: string
       }
     }
 
-    const counterparty = counterpartyKey && row[counterpartyKey]
-      ? String(row[counterpartyKey]).trim()
-      : extractCounterparty(rawDesc);
+    if (amount <= 0) continue;
 
-    return {
+    const counterparty = counterpartyKey && row[counterpartyKey]
+      ? sanitizeFormulaInjection(String(row[counterpartyKey]).trim())
+      : sanitizeFormulaInjection(extractCounterparty(rawDesc));
+
+    results.push({
       date,
       description: rawDesc,
       raw_description: rawDesc,
@@ -162,8 +195,10 @@ export function parseBankStatement(fileBuffer: Buffer | string, filename: string
       type,
       counterparty,
       reference_number: ref
-    };
-  }).filter(t => t.amount > 0);
+    });
+  }
+
+  return results;
 }
 
 // Parse Sales Invoices CSV/Excel
@@ -180,7 +215,10 @@ export function parseSalesInvoices(fileBuffer: Buffer | string, filename: string
     rows = result.data as any[];
   }
 
-  return rows.map((row, idx) => {
+  const results: NormalizedInvoice[] = [];
+
+  for (let idx = 0; idx < rows.length; idx++) {
+    const row = rows[idx];
     const keys = Object.keys(row);
     const findKey = (patterns: string[]) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p.toLowerCase())));
 
@@ -191,22 +229,33 @@ export function parseSalesInvoices(fileBuffer: Buffer | string, filename: string
     const totalKey = findKey(['total', 'amount', 'net', 'invoice value']);
     const taxKey = findKey(['tax', 'gst', 'vat']);
 
-    const invoice_number = numKey ? String(row[numKey]).trim() : `INV-${idx + 100}`;
-    const customer_name = custKey ? String(row[custKey]).trim() : 'Customer';
-    const date = normalizeDate(dateKey ? row[dateKey] : undefined);
-    const due_date = dueKey && row[dueKey] ? normalizeDate(row[dueKey]) : undefined;
+    let date: string;
+    let due_date: string | undefined;
+    try {
+      date = normalizeDate(dateKey ? row[dateKey] : undefined);
+      due_date = dueKey && row[dueKey] ? normalizeDate(row[dueKey]) : undefined;
+    } catch {
+      continue;
+    }
+
     const total_amount = totalKey ? normalizeAmount(row[totalKey]) : 0;
+    if (total_amount <= 0) continue;
+
+    const invoice_number = sanitizeFormulaInjection(numKey ? String(row[numKey]).trim() : `INV-${idx + 100}`);
+    const customer_name = sanitizeFormulaInjection(custKey ? String(row[custKey]).trim() : 'Customer');
     const tax_amount = taxKey ? normalizeAmount(row[taxKey]) : 0;
 
-    return {
+    results.push({
       invoice_number,
       customer_name,
       date,
       due_date,
       total_amount,
       tax_amount
-    };
-  }).filter(inv => inv.total_amount > 0);
+    });
+  }
+
+  return results;
 }
 
 // Parse Vendor Bills CSV/Excel
@@ -223,7 +272,10 @@ export function parseVendorBills(fileBuffer: Buffer | string, filename: string):
     rows = result.data as any[];
   }
 
-  return rows.map((row, idx) => {
+  const results: NormalizedBill[] = [];
+
+  for (let idx = 0; idx < rows.length; idx++) {
+    const row = rows[idx];
     const keys = Object.keys(row);
     const findKey = (patterns: string[]) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p.toLowerCase())));
 
@@ -234,20 +286,33 @@ export function parseVendorBills(fileBuffer: Buffer | string, filename: string):
     const totalKey = findKey(['total', 'amount', 'net', 'cost']);
     const taxKey = findKey(['tax', 'gst', 'vat']);
 
-    const bill_number = numKey ? String(row[numKey]).trim() : `BILL-${idx + 200}`;
-    const vendor_name = venKey ? String(row[venKey]).trim() : 'Vendor';
-    const date = normalizeDate(dateKey ? row[dateKey] : undefined);
-    const due_date = dueKey && row[dueKey] ? normalizeDate(row[dueKey]) : undefined;
+    let date: string;
+    let due_date: string | undefined;
+    try {
+      date = normalizeDate(dateKey ? row[dateKey] : undefined);
+      due_date = dueKey && row[dueKey] ? normalizeDate(row[dueKey]) : undefined;
+    } catch {
+      continue;
+    }
+
     const total_amount = totalKey ? normalizeAmount(row[totalKey]) : 0;
+    if (total_amount <= 0) continue;
+
+    const bill_number = sanitizeFormulaInjection(numKey ? String(row[numKey]).trim() : `BILL-${idx + 200}`);
+    const vendor_name = sanitizeFormulaInjection(venKey ? String(row[venKey]).trim() : 'Vendor');
     const tax_amount = taxKey ? normalizeAmount(row[taxKey]) : 0;
 
-    return {
+    results.push({
       bill_number,
       vendor_name,
       date,
       due_date,
       total_amount,
       tax_amount
-    };
-  }).filter(b => b.total_amount > 0);
+    });
+  }
+
+  return results;
 }
+
+

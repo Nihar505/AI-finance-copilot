@@ -64,23 +64,31 @@ export async function GET(req: NextRequest) {
     const approvedTxns = approvedTxnsRes.rows;
     const allTxns = allTxnsRes.rows;
 
-    // Calculate P&L strictly from approved records
+    // Calculate P&L strictly from approved records (revenue and expense accounts only)
     const revenueItems: Record<string, { name: string; code: string; amount: number }> = {};
     const expenseItems: Record<string, { name: string; code: string; amount: number }> = {};
 
     let totalApprovedRevenue = 0;
     let totalApprovedExpenses = 0;
+    let totalApprovedInflows = 0;
+    let totalApprovedOutflows = 0;
 
     for (const t of approvedTxns) {
       const amt = Number(t.amount);
-      if (t.account_type === 'revenue' || t.type === 'credit') {
+
+      // Track cash flows based on actual debits and credits
+      if (t.type === 'credit') totalApprovedInflows += amt;
+      if (t.type === 'debit') totalApprovedOutflows += amt;
+
+      // P&L strictly captures Revenue and Expense account types, ignoring balance sheet asset/liability movements
+      if (t.account_type === 'revenue') {
         totalApprovedRevenue += amt;
         const catKey = t.category_id || 'other-rev';
         if (!revenueItems[catKey]) {
           revenueItems[catKey] = { name: t.category_name || 'Operating Revenue', code: t.category_code || '4000', amount: 0 };
         }
         revenueItems[catKey].amount += amt;
-      } else if (t.account_type === 'expense' || t.type === 'debit') {
+      } else if (t.account_type === 'expense') {
         totalApprovedExpenses += amt;
         const catKey = t.category_id || 'other-exp';
         if (!expenseItems[catKey]) {
@@ -94,7 +102,7 @@ export async function GET(req: NextRequest) {
 
     // Balance Sheet (Assets, Liabilities, Equity)
     const openingBal = Number(bankRes.rows[0]?.opening_balance || 0);
-    const currentBankBalance = openingBal + totalApprovedRevenue - totalApprovedExpenses;
+    const currentBankBalance = openingBal + totalApprovedInflows - totalApprovedOutflows;
 
     // Accounts Receivable = Unpaid Invoices total
     const accountsReceivable = invoicesRes.rows
@@ -116,9 +124,9 @@ export async function GET(req: NextRequest) {
 
     // Cash Flow Summary (Direct Cash Method from approved transactions)
     const cashFlow = {
-      operatingInflows: totalApprovedRevenue,
-      operatingOutflows: totalApprovedExpenses,
-      netCashFlow: totalApprovedRevenue - totalApprovedExpenses,
+      operatingInflows: totalApprovedInflows,
+      operatingOutflows: totalApprovedOutflows,
+      netCashFlow: totalApprovedInflows - totalApprovedOutflows,
       startingCash: openingBal,
       endingCash: currentBankBalance
     };
@@ -177,6 +185,7 @@ export async function GET(req: NextRequest) {
     return response;
   } catch (error: any) {
     logger.error('Dashboard API error', { route: '/api/dashboard', err: String(error), durationMs: Date.now() - t0 });
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    const status = error.message?.includes('403 Forbidden') ? 403 : error.message?.includes('401') ? 401 : 500;
+    return NextResponse.json({ success: false, error: error.message }, { status });
   }
 }

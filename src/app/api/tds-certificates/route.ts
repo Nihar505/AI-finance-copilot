@@ -50,11 +50,37 @@ const SECTION_MAP: Record<string, { section: TDSCertificate['section']; desc: st
 export async function GET(req: NextRequest) {
   try {
     const auth = await getAuthContext(req);
+    await assertTenantAccess(auth, auth.activeOrgId);
+
     const { searchParams } = new URL(req.url);
     const quarter = (searchParams.get('quarter') || 'Q3') as 'Q1' | 'Q2' | 'Q3' | 'Q4';
     const financialYear = searchParams.get('financialYear') || '2024-25';
 
     const db = await getDb();
+
+    // Ensure persistent table for CA sign-offs exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS tds_signoffs (
+        id VARCHAR(100) PRIMARY KEY,
+        org_id VARCHAR(50) NOT NULL,
+        cert_id VARCHAR(100) NOT NULL,
+        signed_by VARCHAR(100) NOT NULL,
+        signed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (org_id, cert_id)
+      );
+    `);
+
+    const signoffsRes = await db.query(
+      'SELECT cert_id, signed_by, signed_at FROM tds_signoffs WHERE org_id = $1;',
+      [auth.activeOrgId]
+    );
+    const dbSignoffs = new Map<string, { signedBy: string; signedAt: string }>();
+    for (const row of signoffsRes.rows) {
+      dbSignoffs.set(row.cert_id, {
+        signedBy: row.signed_by,
+        signedAt: new Date(row.signed_at).toISOString(),
+      });
+    }
 
     // 1. Fetch organization info for deductor details
     const orgRes = await db.query(
@@ -122,7 +148,7 @@ export async function GET(req: NextRequest) {
       };
 
       const certId = `CERT-${financialYear.replace('-', '')}-${quarter}-${v.id || certIdx}`;
-      const signedInfo = signedOffCerts.get(certId);
+      const signedInfo = dbSignoffs.get(certId) || signedOffCerts.get(certId);
 
       // Gross amount: use sum from bills if available, otherwise realistic quarterly estimate
       const grossAmount = billsByVendor[v.id]
@@ -197,7 +223,8 @@ export async function GET(req: NextRequest) {
     });
   } catch (err: any) {
     logger.error('[tds-certificates/GET]', { route: '/api/tds-certificates', err: String(err) });
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    const status = err.message?.includes('403 Forbidden') ? 403 : err.message?.includes('401') ? 401 : 500;
+    return NextResponse.json({ success: false, error: err.message }, { status });
   }
 }
 
@@ -230,9 +257,29 @@ export async function POST(req: NextRequest) {
       const signedBy = auth.userId || 'Priya Sharma, FCA';
       signedOffCerts.set(certificateId, { signedBy, signedAt });
 
+      const db = await getDb();
+
+      // Persist in tds_signoffs table
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS tds_signoffs (
+          id VARCHAR(100) PRIMARY KEY,
+          org_id VARCHAR(50) NOT NULL,
+          cert_id VARCHAR(100) NOT NULL,
+          signed_by VARCHAR(100) NOT NULL,
+          signed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE (org_id, cert_id)
+        );
+      `);
+      await db.query(
+        `INSERT INTO tds_signoffs (id, org_id, cert_id, signed_by, signed_at)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (org_id, cert_id)
+         DO UPDATE SET signed_by = EXCLUDED.signed_by, signed_at = EXCLUDED.signed_at;`,
+        [`tds-so-${Date.now()}`, auth.activeOrgId, certificateId, signedBy, signedAt]
+      );
+
       // Record in audit log
       try {
-        const db = await getDb();
         const logId = `log-tds-${Date.now()}`;
         await db.query(
           `INSERT INTO audit_logs (id, org_id, user_id, user_name, action, entity_type, entity_id, before_state, after_state, explanation)
@@ -265,6 +312,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, error: 'Unknown action' }, { status: 400 });
   } catch (err: any) {
     logger.error('[tds-certificates/POST]', { route: '/api/tds-certificates', err: String(err) });
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    const status = err.message?.includes('403 Forbidden') ? 403 : err.message?.includes('401') ? 401 : 500;
+    return NextResponse.json({ success: false, error: err.message }, { status });
   }
 }

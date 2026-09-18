@@ -45,7 +45,8 @@ export async function GET(req: NextRequest) {
     });
   } catch (err: any) {
     logger.error('[alerts/GET]', { route: '/api/alerts', err: String(err) });
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    const status = err.message?.includes('403 Forbidden') ? 403 : err.message?.includes('401') ? 401 : 500;
+    return NextResponse.json({ success: false, error: err.message }, { status });
   }
 }
 
@@ -109,6 +110,7 @@ export async function POST(req: NextRequest) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(testPayload),
+            signal: AbortSignal.timeout(5000),
           });
           delivered = res.ok;
           if (!res.ok) {
@@ -232,6 +234,7 @@ export async function POST(req: NextRequest) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(5000),
           });
           delivered = res.ok;
           if (!res.ok) errorMsg = `HTTP ${res.status}`;
@@ -285,6 +288,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, error: 'Invalid action. Use action=test or action=send_compliance_alert' }, { status: 400 });
   } catch (err: any) {
     logger.error('[alerts/POST]', { route: '/api/alerts', err: String(err) });
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    const status = err.message?.includes('403 Forbidden') ? 403 : err.message?.includes('401') ? 401 : 500;
+    return NextResponse.json({ success: false, error: err.message }, { status });
   }
 }

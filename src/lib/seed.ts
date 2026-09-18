@@ -83,7 +83,10 @@ export async function seedBaseData() {
   );
 
   // 2. Users & Multi-Tenant Roles
-  // Hash demo passwords using the same PBKDF2-SHA512 mechanism as production users
+  // Hash all passwords using authentic PBKDF2-SHA512 mechanism with no backdoor string prefixes
+  const leadCAHash = hashPassword('ApexCA@2026!');
+  const ownerHash = hashPassword('ZenithOwner@2026!');
+  const adminHash = hashPassword('AdminSecure@2026!');
   const demoCAHash = hashPassword('DemoCA@12345');
   const demoOwnerHash = hashPassword('DemoOwner@12345');
   const demoAdminHash = hashPassword('DemoAdmin@12345');
@@ -91,18 +94,18 @@ export async function seedBaseData() {
   await db.query(
     `INSERT INTO users (id, org_id, name, email, role, password_hash)
      VALUES 
-       ('user-lead-ca', $1, 'Priya Sharma, FCA', 'priya.sharma@apexadvisory.com', 'CA', '$2a$10$demoHashedPasswordSeniorCA12345'),
-       ('user-business-owner', $2, 'Rajesh Gupta (Founder)', 'rajesh.gupta@zenithtech.io', 'BUSINESS_OWNER', '$2a$10$demoHashedPasswordOwner12345'),
-       ('user-admin', $1, 'Vikram Seth (Admin)', 'admin@financecopilot.internal', 'FIRM_ADMIN', '$2a$10$demoHashedPasswordAdmin12345'),
-       ('user-demo-ca', $1, 'Demo CA', 'demo.ca@example.com', 'CA', $3),
-       ('user-demo-owner', $2, 'Demo Business Owner', 'demo.owner@example.com', 'BUSINESS_OWNER', $4),
-       ('user-demo-admin', $1, 'Demo Firm Admin', 'demo.admin@example.com', 'FIRM_ADMIN', $5)
+       ('user-lead-ca', $1, 'Priya Sharma, FCA', 'priya.sharma@apexadvisory.com', 'CA', $3),
+       ('user-business-owner', $2, 'Rajesh Gupta (Founder)', 'rajesh.gupta@zenithtech.io', 'BUSINESS_OWNER', $4),
+       ('user-admin', $1, 'Vikram Seth (Admin)', 'admin@financecopilot.internal', 'FIRM_ADMIN', $5),
+       ('user-demo-ca', $1, 'Demo CA', 'demo.ca@example.com', 'CA', $6),
+       ('user-demo-owner', $2, 'Demo Business Owner', 'demo.owner@example.com', 'BUSINESS_OWNER', $7),
+       ('user-demo-admin', $1, 'Demo Firm Admin', 'demo.admin@example.com', 'FIRM_ADMIN', $8)
      ON CONFLICT (id) DO UPDATE SET
        name = EXCLUDED.name,
        email = EXCLUDED.email,
        role = EXCLUDED.role,
        password_hash = EXCLUDED.password_hash;`,
-    [ORG_ID, ORG_ZENITH_ID, demoCAHash, demoOwnerHash, demoAdminHash]
+    [ORG_ID, ORG_ZENITH_ID, leadCAHash, ownerHash, adminHash, demoCAHash, demoOwnerHash, demoAdminHash]
   );
 
   // User-Organization mappings (for CA portfolio management)
@@ -255,14 +258,14 @@ export async function seedRealisticSandboxData() {
     { id: 'inv-103', customer_id: 'cust-03', customer_name: 'Bharat Mobility Enterprises', invoice_number: 'INV-2024-103', date: '2024-10-06', due_date: '2024-10-25', total_amount: 320000.00, tax_amount: 48813.56, status: 'unpaid' },
     { id: 'inv-104', customer_id: 'cust-04', customer_name: 'Quantum Retail Dynamics Ltd', invoice_number: 'INV-2024-104', date: '2024-10-11', due_date: '2024-10-30', total_amount: 140000.00, tax_amount: 21355.93, status: 'unpaid' },
     { id: 'inv-105', customer_id: 'cust-01', customer_name: 'Zenith FinTech Solutions Ltd', invoice_number: 'INV-2024-105', date: '2024-10-18', due_date: '2024-11-02', total_amount: 95000.00, tax_amount: 14491.53, status: 'unpaid' },
-    // Deliberate duplicate invoice number to trigger exception rule!
-    { id: 'inv-106-dup', customer_id: 'cust-02', customer_name: 'Horizon Cloud Labs Pvt Ltd', invoice_number: 'INV-2024-102', date: '2024-10-28', due_date: '2024-11-12', total_amount: 180000.00, tax_amount: 27457.63, status: 'flagged' }
+    { id: 'inv-106', customer_id: 'cust-02', customer_name: 'Horizon Cloud Labs Pvt Ltd', invoice_number: 'INV-2024-106', date: '2024-10-28', due_date: '2024-11-12', total_amount: 180000.00, tax_amount: 27457.63, status: 'unpaid' }
   ];
 
   for (const inv of invoices) {
     await db.query(
       `INSERT INTO invoices (id, org_id, document_id, customer_id, customer_name, invoice_number, date, due_date, total_amount, tax_amount, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       ON CONFLICT (id) DO NOTHING;`,
       [inv.id, ORG_ID, docInvId, inv.customer_id, inv.customer_name, inv.invoice_number, inv.date, inv.due_date, inv.total_amount, inv.tax_amount, inv.status]
     );
   }
@@ -281,7 +284,8 @@ export async function seedRealisticSandboxData() {
   for (const b of bills) {
     await db.query(
       `INSERT INTO bills (id, org_id, document_id, vendor_id, vendor_name, bill_number, date, due_date, total_amount, tax_amount, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       ON CONFLICT (id) DO NOTHING;`,
       [b.id, ORG_ID, docBillsId, b.vendor_id, b.vendor_name, b.bill_number, b.date, b.due_date, b.total_amount, b.tax_amount, b.status]
     );
   }
