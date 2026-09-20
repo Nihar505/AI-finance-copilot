@@ -35,7 +35,7 @@ export interface TDSCertificate {
   caConfirmationRequired?: boolean; // Requires CA verification for GST exclusion
   isBelowThreshold?: boolean; // True if payments fall below statutory single/aggregate threshold
   tdsRate: number | null; // percentage e.g. 10 for 10%, null if data missing/unverified
-  tdsAmount: number;
+  tdsAmount: number | null; // null if data missing/unverified
   challanBsr: string | null;
   challanNumber: string | null;
   depositDate: string | null;
@@ -152,6 +152,13 @@ export async function GET(req: NextRequest) {
       allocationsByLine.set(row.deduction_line_id, row);
     }
 
+    // 5b. Fetch per-org statutory rule acknowledgements
+    const acksRes = await db.query(
+      'SELECT rule_id, acknowledged_by, acknowledged_at FROM org_statutory_acknowledgements WHERE org_id = $1;',
+      [auth.activeOrgId]
+    );
+    const orgAcks = new Set<string>(acksRes.rows.map((r: any) => r.rule_id));
+
     // 6. Year-to-Date (YTD) Vendor Gross Tracking for Statutory Thresholds
     // Query all bills from the start of the financial year up to the end of the requested quarter
     const startYear = parseInt(financialYear.split('-')[0], 10);
@@ -168,8 +175,19 @@ export async function GET(req: NextRequest) {
       [auth.activeOrgId, fyStartDate, quarterEnd]
     );
 
-    // Track YTD gross (net base) across FY and collect quarter-specific bills
+    // Track YTD gross across FY and collect all FY bills per vendor
     const vendorYtdNetBase: Record<string, number> = {};
+    const vendorFyBills: Record<
+      string,
+      Array<{
+        id: string;
+        date: string;
+        totalAmount: number;
+        taxAmount: number;
+        netBase: number;
+        hasSeparateGst: boolean;
+      }>
+    > = {};
     const vendorQuarterData: Record<
       string,
       {
@@ -205,6 +223,18 @@ export async function GET(req: NextRequest) {
       const billDateStr = b.date instanceof Date
         ? b.date.toISOString().slice(0, 10)
         : String(b.date).slice(0, 10);
+
+      if (!vendorFyBills[vId]) {
+        vendorFyBills[vId] = [];
+      }
+      vendorFyBills[vId].push({
+        id: b.id,
+        date: billDateStr,
+        totalAmount,
+        taxAmount,
+        netBase,
+        hasSeparateGst,
+      });
 
       // Check if bill falls in requested quarter
       if (billDateStr >= quarterStart && billDateStr <= quarterEnd) {
@@ -267,7 +297,7 @@ export async function GET(req: NextRequest) {
       let sectionDescription = '';
       let paymentCode: string | null = null;
       let tdsRate: number | null = null;
-      let tdsAmount = 0;
+      let tdsAmount: number | null = null;
       let isBelowThreshold = false;
       let ruleStatus: string | null = null;
       let ruleCitation: string | null = null;
@@ -287,59 +317,88 @@ export async function GET(req: NextRequest) {
           missingFields.push('statutory_rule_not_found');
           sectionDescription = 'Statutory rule not found for section and date';
           tdsRate = null;
-          tdsAmount = 0;
+          tdsAmount = null;
         } else {
           ruleStatus = rule.status;
           ruleCitation = rule.sourceCitation || null;
+          const isOrgAck = orgAcks.has(rule.id);
+          const isRuleVerified = rule.status === 'approved' || isOrgAck;
 
           // Check if rule is in 'draft' or unverified status
-          if (rule.status !== 'approved') {
+          if (!isRuleVerified) {
             missingFields.push('rates_unverified');
             section = rule.section || section;
             paymentCode = rule.paymentCode || null;
             sectionDescription = `${rule.description} (Rates Unverified - Draft Statutory Rule)`;
             tdsRate = null;
-            tdsAmount = 0;
+            tdsAmount = null;
           } else {
-            // Rule is APPROVED
+            // Rule is VERIFIED (globally approved by Platform Admin or acknowledged for this Org)
             section = rule.section || section;
             sectionDescription = rule.description;
             paymentCode = rule.paymentCode || null;
 
-            // Check dynamic statutory thresholds using DB-loaded values
-            const ytdGross = vendorYtdNetBase[vId] || vData.quarterTaxableBase;
-            const singleBreached =
-              rule.thresholdSingle !== null &&
-              rule.thresholdSingle !== undefined &&
-              vData.quarterBills.some((b) => b.netBase > (rule.thresholdSingle as number));
-
-            const aggBreached =
-              rule.thresholdAggregate !== null &&
-              rule.thresholdAggregate !== undefined &&
-              ytdGross > (rule.thresholdAggregate as number);
-
-            const hasThresholds =
-              (rule.thresholdSingle !== null && rule.thresholdSingle !== undefined) ||
-              (rule.thresholdAggregate !== null && rule.thresholdAggregate !== undefined);
-
-            if (hasThresholds && !singleBreached && !aggBreached) {
-              // Below threshold: Exempt from TDS
-              isBelowThreshold = true;
-              tdsRate = 0;
-              tdsAmount = 0;
-              sectionDescription += ' (Below statutory threshold - exempt)';
+            // Determine effective statutory rate (or penal rate if PAN missing)
+            let effectiveRate = rule.rate ?? 10.0;
+            if (!pan) {
+              // Section 206AA penal withholding
+              effectiveRate = 20.0;
+              tdsRate = 20.0;
+              sectionDescription += ' (Section 206AA Penal Rate Applied: Missing PAN)';
             } else {
-              // Threshold breached or no threshold: Apply TDS
-              if (!pan) {
-                // Section 206AA penal withholding
-                tdsRate = 20.0;
-                sectionDescription += ' (Section 206AA Penal Rate Applied: Missing PAN)';
-              } else {
-                tdsRate = rule.rate ?? 10.0;
+              tdsRate = effectiveRate;
+            }
+
+            // Dynamic statutory thresholds & annual aggregate catch-up math
+            const fyBills = (vendorFyBills[vId] || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+            const threshSingle = rule.thresholdSingle !== null && rule.thresholdSingle !== undefined ? Number(rule.thresholdSingle) : null;
+            const threshAggregate = rule.thresholdAggregate !== null && rule.thresholdAggregate !== undefined ? Number(rule.thresholdAggregate) : null;
+            const hasThresholds = threshSingle !== null || threshAggregate !== null;
+
+            if (!hasThresholds) {
+              tdsAmount = roundCurrency(vData.quarterTaxableBase * (effectiveRate / 100));
+            } else {
+              let cumulativeFyNetBase = 0;
+              let priorQuarterCumulative = 0;
+              let priorQuarterTaxable = 0;
+
+              for (const bill of fyBills) {
+                cumulativeFyNetBase = roundCurrency(cumulativeFyNetBase + bill.netBase);
+                if (bill.date < quarterStart) {
+                  priorQuarterCumulative = roundCurrency(priorQuarterCumulative + bill.netBase);
+                  if (threshSingle !== null && bill.netBase > threshSingle) {
+                    priorQuarterTaxable = roundCurrency(priorQuarterTaxable + bill.netBase);
+                  }
+                }
               }
 
-              // Compute TDS strictly on taxable base (excluding GST per CBDT Circular 23/2017)
-              tdsAmount = roundCurrency(vData.quarterTaxableBase * (tdsRate / 100));
+              const aggBreached = threshAggregate !== null && cumulativeFyNetBase > threshAggregate;
+
+              if (aggBreached) {
+                // Annual aggregate threshold crossed!
+                // Statutory rule: TDS is due on the whole cumulative amount from the crossing bill onward.
+                const priorQuarterAggBreached = threshAggregate !== null && priorQuarterCumulative > threshAggregate;
+                const priorTaxedBase = priorQuarterAggBreached ? priorQuarterCumulative : priorQuarterTaxable;
+                const priorTdsLiability = roundCurrency(priorTaxedBase * (effectiveRate / 100));
+                const totalTdsLiabilityToDate = roundCurrency(cumulativeFyNetBase * (effectiveRate / 100));
+
+                tdsAmount = roundCurrency(totalTdsLiabilityToDate - priorTdsLiability);
+                isBelowThreshold = false;
+              } else {
+                // Aggregate threshold NOT crossed. Check if single bill threshold breached in quarter
+                const singleBreachedBills = vData.quarterBills.filter((b) => threshSingle !== null && b.netBase > threshSingle);
+                if (singleBreachedBills.length > 0) {
+                  const taxableSum = singleBreachedBills.reduce((acc, b) => acc + b.netBase, 0);
+                  tdsAmount = roundCurrency(taxableSum * (effectiveRate / 100));
+                  isBelowThreshold = false;
+                } else {
+                  // Below threshold: Exempt from TDS
+                  isBelowThreshold = true;
+                  tdsRate = 0;
+                  tdsAmount = 0.0;
+                  sectionDescription += ' (Below statutory threshold - exempt)';
+                }
+              }
             }
           }
         }
@@ -360,10 +419,10 @@ export async function GET(req: NextRequest) {
         challanBsr = allocInfo.bsr_code;
         allocatedChallanSource = allocInfo.challan_source || 'manual';
         depositDate = allocInfo.deposit_date ? new Date(allocInfo.deposit_date).toISOString().slice(0, 10) : null;
-      } else if (tdsAmount > 0) {
+      } else if (tdsAmount !== null && tdsAmount > 0) {
         // If TDS is deductible but no challan allocated, mark missing
         missingFields.push('challan_allocation');
-      } else if (isBelowThreshold) {
+      } else if (isBelowThreshold || tdsAmount === 0) {
         // When below threshold, TDS is 0 so no challan deposit is required
         isAllocated = true;
       }
@@ -415,19 +474,30 @@ export async function GET(req: NextRequest) {
     }
 
     // Compute Summary Math (strictly from stored records, no float drift)
+    const hasUnverifiedLines = certificates.some(
+      (c) => c.tdsAmount === null || c.missingFields?.includes('rates_unverified')
+    );
     const totalGrossPaid = roundCurrency(certificates.reduce((acc, c) => acc + c.grossAmount, 0));
-    const totalTdsDeducted = roundCurrency(certificates.reduce((acc, c) => acc + c.tdsAmount, 0));
+    const totalTdsDeducted = hasUnverifiedLines
+      ? null
+      : roundCurrency(certificates.reduce((acc, c) => acc + (c.tdsAmount || 0), 0));
     const totalTdsDeposited = roundCurrency(challans.reduce((acc: number, ch: any) => acc + Number(ch.amount || 0), 0));
-    const depositedVsDeductedVariance = roundCurrency(totalTdsDeposited - totalTdsDeducted);
+    const depositedVsDeductedVariance = totalTdsDeducted !== null
+      ? roundCurrency(totalTdsDeposited - totalTdsDeducted)
+      : null;
 
     const signedCount = certificates.filter((c) => c.status === 'signed_off').length;
     const dataMissingCount = certificates.filter((c) => c.status === 'data_missing').length;
 
-    // Return-ready condition: All deduction lines allocated, no data_missing lines, and deposited >= deducted
+    // Return-ready condition: All deduction lines allocated, no data_missing lines, no unverified lines, and deposited >= deducted
     const allLinesAllocated =
       certificates.length > 0 &&
       certificates.every((c) => c.isAllocated && c.status !== 'data_missing');
-    const returnReady = allLinesAllocated && totalTdsDeposited >= totalTdsDeducted;
+    const returnReady =
+      allLinesAllocated &&
+      !hasUnverifiedLines &&
+      totalTdsDeducted !== null &&
+      totalTdsDeposited >= totalTdsDeducted;
 
     const summary = {
       quarter,
@@ -440,6 +510,8 @@ export async function GET(req: NextRequest) {
       totalTdsDeducted,
       totalTdsDeposited,
       depositedVsDeductedVariance,
+      totalsIncomplete: hasUnverifiedLines,
+      totalTdsStatus: hasUnverifiedLines ? 'incomplete' : 'complete',
       allLinesAllocated,
       returnReady,
       signedCount,
@@ -553,15 +625,22 @@ export async function POST(req: NextRequest) {
       );
 
       const matchedRule = ruleRes.rows[0];
-      if (matchedRule && matchedRule.status !== 'approved') {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Cannot sign off: Statutory rule is in draft status (${matchedRule.status}, rates unverified). A Chartered Accountant must approve statutory mapping before sign-off.`,
-            missingFields: ['rates_unverified'],
-          },
-          { status: 400 }
+      if (matchedRule) {
+        const ackRes = await db.query(
+          'SELECT 1 FROM org_statutory_acknowledgements WHERE org_id = $1 AND rule_id = $2;',
+          [auth.activeOrgId, matchedRule.id]
         );
+        const isVerified = matchedRule.status === 'approved' || ackRes.rows.length > 0;
+        if (!isVerified) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: `Cannot sign off: Statutory rule is in draft status (${matchedRule.status}, rates unverified). A Platform Admin must approve the rule or Organization CA must acknowledge it before sign-off.`,
+              missingFields: ['rates_unverified'],
+            },
+            { status: 400 }
+          );
+        }
       }
 
       // Check challan allocation for this deduction line
@@ -698,11 +777,14 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // ─── ACTION 4: CA Approval of Draft Statutory Rule ────────────────────────
+    // ─── ACTION 4: Platform Admin Approval of Draft Statutory Rule ────────────
     if (action === 'approve_statutory_rule') {
-      const access = checkRoleAccess(auth, ['CA', 'FIRM_ADMIN']);
+      const access = checkRoleAccess(auth, ['FIRM_ADMIN']);
       if (!access.allowed) {
-        return NextResponse.json({ success: false, error: 'Access Denied: CA or Firm Admin role required.' }, { status: 403 });
+        return NextResponse.json(
+          { success: false, error: 'Access Denied: Global statutory rule approval requires platform admin role.' },
+          { status: 403 }
+        );
       }
 
       const { ruleId } = bodyParsed.data;
@@ -710,13 +792,17 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: false, error: 'ruleId is required' }, { status: 400 });
       }
 
-      const reviewerName = auth.userName || auth.userId || 'CA Priya Sharma, FCA';
+      const reviewerId = auth.userId;
+      if (!reviewerId) {
+        return NextResponse.json({ success: false, error: 'User ID missing from authenticated session' }, { status: 401 });
+      }
+
       const updateRes = await db.query(
         `UPDATE statutory_tds_rules
          SET status = 'approved', reviewed_by = $1, reviewed_at = CURRENT_TIMESTAMP
          WHERE id = $2
          RETURNING id, section, status, reviewed_by, reviewed_at;`,
-        [reviewerName, ruleId]
+        [reviewerId, ruleId]
       );
 
       if (updateRes.rows.length === 0) {
@@ -725,8 +811,38 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        message: `Statutory rule ${ruleId} approved by ${reviewerName}`,
+        message: `Statutory rule ${ruleId} approved by platform admin ${reviewerId}`,
         rule: updateRes.rows[0],
+      });
+    }
+
+    // ─── ACTION 5: Per-Organization Statutory Acknowledgement ─────────────────
+    if (action === 'acknowledge_statutory_rule') {
+      const access = checkRoleAccess(auth, ['CA', 'FIRM_ADMIN']);
+      if (!access.allowed) {
+        return NextResponse.json({ success: false, error: 'Access Denied: CA or Firm Admin role required.' }, { status: 403 });
+      }
+      await assertTenantAccess(auth, auth.activeOrgId);
+
+      const { ruleId, notes } = bodyParsed.data;
+      if (!ruleId) {
+        return NextResponse.json({ success: false, error: 'ruleId is required' }, { status: 400 });
+      }
+
+      const ackId = `ack-${auth.activeOrgId}-${ruleId}`;
+      const ackRes = await db.query(
+        `INSERT INTO org_statutory_acknowledgements (id, org_id, rule_id, acknowledged_by, acknowledged_at, notes)
+         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5)
+         ON CONFLICT (org_id, rule_id)
+         DO UPDATE SET acknowledged_by = EXCLUDED.acknowledged_by, acknowledged_at = CURRENT_TIMESTAMP, notes = EXCLUDED.notes
+         RETURNING id, org_id, rule_id, acknowledged_by, acknowledged_at, notes;`,
+        [ackId, auth.activeOrgId, ruleId, auth.userId, notes || null]
+      );
+
+      return NextResponse.json({
+        success: true,
+        message: `Statutory rule ${ruleId} acknowledged for organization ${auth.activeOrgId}`,
+        acknowledgement: ackRes.rows[0],
       });
     }
 

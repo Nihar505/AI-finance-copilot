@@ -134,7 +134,7 @@ export const TDSCertificatesView: React.FC<TDSCertificatesViewProps> = ({
       `Section: ${cert.section || 'PENDING CA REVIEW'} - ${cert.sectionDescription}`,
       '',
       'Gross Amount Paid (INR),TDS Rate (%),TDS Deducted (INR),Challan BSR,Challan Serial,Deposit Date,Status',
-      `"${cert.grossAmount.toFixed(2)}","${cert.tdsRate !== null ? cert.tdsRate + '%' : 'DATA MISSING'}","${cert.tdsAmount.toFixed(2)}","${cert.challanBsr || 'UNALLOCATED'}","${cert.challanNumber || 'UNALLOCATED'}","${cert.depositDate || 'UNALLOCATED'}","${cert.status === 'signed_off' ? 'Signed Off by CA' : cert.status === 'data_missing' ? 'Data Missing' : 'Generated'}"`,
+      `"${cert.grossAmount.toFixed(2)}","${cert.tdsRate !== null ? cert.tdsRate + '%' : 'UNVERIFIED'}","${cert.tdsAmount !== null ? cert.tdsAmount.toFixed(2) : 'INCOMPLETE'}","${cert.challanBsr || 'UNALLOCATED'}","${cert.challanNumber || 'UNALLOCATED'}","${cert.depositDate || 'UNALLOCATED'}","${cert.status === 'signed_off' ? 'Signed Off by CA' : cert.status === 'data_missing' ? 'Data Missing' : 'Generated'}"`,
       '',
       'Statutory Notice: Form 16A certificates are issued via TRACES post quarterly 26Q filing.',
     ].join('\n');
@@ -186,7 +186,7 @@ export const TDSCertificatesView: React.FC<TDSCertificatesViewProps> = ({
       (c.gstAmount || 0).toFixed(2),
       c.grossAmount.toFixed(2),
       c.tdsRate !== null ? `${c.tdsRate}%` : c.isBelowThreshold ? '0% (Exempt)' : 'UNVERIFIED',
-      c.tdsAmount.toFixed(2),
+      c.tdsAmount !== null ? c.tdsAmount.toFixed(2) : 'INCOMPLETE',
       c.challanNumber || 'UNALLOCATED',
       c.challanBsr || 'UNALLOCATED',
       c.depositDate || 'UNALLOCATED',
@@ -201,7 +201,7 @@ export const TDSCertificatesView: React.FC<TDSCertificatesViewProps> = ({
       '# TDS DEDUCTION REGISTER / 26Q PREPARATION WORKSHEET',
       `# Deductor: ${deductor?.name || ''} | TAN: ${deductor?.tan || 'DATA MISSING'} | Period: ${quarter} ${financialYear}`,
       `# Note: CBDT Circular 23/2017 applied — TDS base excludes separately indicated GST.`,
-      `# Total Deducted: INR ${summary?.totalTdsDeducted || 0} | Total Deposited: INR ${summary?.totalTdsDeposited || 0}`,
+      `# Total Deducted: INR ${summary?.totalTdsDeducted !== null && summary?.totalTdsDeducted !== undefined ? summary.totalTdsDeducted.toFixed(2) : 'INCOMPLETE'} | Total Deposited: INR ${summary?.totalTdsDeposited || 0}`,
       headers.join(','),
       ...rows.map((r) => r.join(',')),
     ].join('\n');
@@ -471,11 +471,13 @@ export const TDSCertificatesView: React.FC<TDSCertificatesViewProps> = ({
 
         <div className="card" style={{ padding: 14 }}>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 4 }}>TOTAL TDS DEDUCTED</div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#38bdf8' }}>
-            ₹{(summary?.totalTdsDeducted || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+          <div style={{ fontSize: summary?.totalsIncomplete ? '1.1rem' : '1.4rem', fontWeight: 700, color: summary?.totalsIncomplete ? '#f59e0b' : '#38bdf8' }}>
+            {summary?.totalsIncomplete || summary?.totalTdsDeducted === null
+              ? 'Incomplete'
+              : `₹${summary.totalTdsDeducted.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
           </div>
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: 2 }}>
-            Computed from bill amounts
+          <div style={{ fontSize: '0.72rem', color: summary?.totalsIncomplete ? '#f59e0b' : 'var(--text-secondary)', marginTop: 2 }}>
+            {summary?.totalsIncomplete ? 'Unverified / draft rule lines present' : 'Computed from verified rules'}
           </div>
         </div>
 
@@ -765,8 +767,12 @@ export const TDSCertificatesView: React.FC<TDSCertificatesViewProps> = ({
                       </td>
 
                       {/* TDS Deducted */}
-                      <td style={{ padding: '12px 14px', textAlign: 'right', fontWeight: 700, color: cert.isBelowThreshold ? 'var(--text-muted)' : '#38bdf8' }}>
-                        ₹{cert.tdsAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      <td style={{ padding: '12px 14px', textAlign: 'right', fontWeight: 700, color: cert.isBelowThreshold ? 'var(--text-muted)' : cert.tdsAmount === null ? '#f59e0b' : '#38bdf8' }}>
+                        {cert.tdsAmount !== null ? (
+                          `₹${cert.tdsAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        ) : (
+                          <span style={{ fontSize: '0.72rem', color: '#f59e0b', fontWeight: 600 }}>Unknown (Unverified)</span>
+                        )}
                         {cert.isBelowThreshold && (
                           <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: 2 }}>&lt; Threshold</div>
                         )}

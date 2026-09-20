@@ -231,6 +231,15 @@ describe('Phase 1: API Route & Database Verification', () => {
       [TEST_ORG_ID, challanId, certId]
     );
 
+    // Phase 1c: All statutory rules are draft (unverified) by default.
+    // Tenant CA must acknowledge rule adoption for org before sign-off is permitted.
+    await db.query(
+      `INSERT INTO org_statutory_acknowledgements (id, org_id, rule_id, acknowledged_by, notes)
+       VALUES ('ack-p1-signoff', $1, 'rule-1961-194jb', 'user-phase1-ca', 'Adopted for test org sign-off')
+       ON CONFLICT (org_id, rule_id) DO NOTHING;`,
+      [TEST_ORG_ID]
+    );
+
     // Now sign off as CA
     const signReq = new NextRequest(`http://localhost:3010/api/tds-certificates`, {
       method: 'POST',

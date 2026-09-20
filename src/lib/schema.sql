@@ -342,7 +342,7 @@ CREATE INDEX IF NOT EXISTS idx_tds_challan_alloc_line ON tds_challan_allocations
 CREATE TABLE IF NOT EXISTS statutory_tds_rules (
     id VARCHAR(50) PRIMARY KEY,
     legal_regime VARCHAR(50) NOT NULL, -- 'IT_ACT_1961' | 'IT_ACT_2025'
-    section VARCHAR(50),
+    section VARCHAR(100),
     payment_code VARCHAR(50),
     description TEXT NOT NULL,
     effective_from DATE NOT NULL,
@@ -350,9 +350,26 @@ CREATE TABLE IF NOT EXISTS statutory_tds_rules (
     rate NUMERIC(5, 2),
     threshold_single NUMERIC(15, 2),
     threshold_aggregate NUMERIC(15, 2),
-    status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE', -- 'ACTIVE', 'SUPERSEDED', 'NEEDS_CA_REVIEW'
+    source_citation TEXT,
+    reviewed_by VARCHAR(50) REFERENCES users(id) ON DELETE SET NULL,
+    reviewed_at TIMESTAMP WITH TIME ZONE,
+    status VARCHAR(30) NOT NULL DEFAULT 'draft', -- 'draft', 'approved', 'SUPERSEDED', 'NEEDS_CA_REVIEW'
     notes TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_statutory_rule_approval CHECK ((status = 'approved' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL) OR (status != 'approved'))
 );
 CREATE INDEX IF NOT EXISTS idx_statutory_rules_regime ON statutory_tds_rules (legal_regime, effective_from);
+
+-- ─── Per-Organization Statutory Acknowledgement Table ─────────────────────────
+CREATE TABLE IF NOT EXISTS org_statutory_acknowledgements (
+    id VARCHAR(50) PRIMARY KEY,
+    org_id VARCHAR(50) NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    rule_id VARCHAR(50) NOT NULL REFERENCES statutory_tds_rules(id) ON DELETE CASCADE,
+    acknowledged_by VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    acknowledged_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    notes TEXT,
+    CONSTRAINT uq_org_rule_ack UNIQUE (org_id, rule_id)
+);
+CREATE INDEX IF NOT EXISTS idx_org_stat_ack ON org_statutory_acknowledgements (org_id, rule_id);
+
 

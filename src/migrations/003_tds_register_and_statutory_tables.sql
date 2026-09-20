@@ -60,21 +60,21 @@ CREATE TABLE IF NOT EXISTS statutory_tds_rules (
     rate NUMERIC(5, 2),                -- NULL for 2025 Act until CA review
     threshold_single NUMERIC(15, 2),
     threshold_aggregate NUMERIC(15, 2),
-    status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE', -- 'ACTIVE', 'SUPERSEDED', 'NEEDS_CA_REVIEW'
+    status VARCHAR(30) NOT NULL DEFAULT 'draft', -- 'draft', 'approved', 'SUPERSEDED', 'NEEDS_CA_REVIEW'
     notes TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_statutory_rules_regime ON statutory_tds_rules (legal_regime, effective_from);
 
--- ─── 6. Seed Baseline Statutory TDS Rules ────────────────────────────────────
+-- ─── 6. Seed Baseline Statutory TDS Rules (All Draft Pending CA Review) ───────
 INSERT INTO statutory_tds_rules (id, legal_regime, section, payment_code, description, effective_from, effective_to, rate, threshold_single, threshold_aggregate, status, notes)
 VALUES
-    ('rule-1961-194c', 'IT_ACT_1961', '194C', '94C', 'Payments to Contractors and Sub-contractors', '1961-04-01', '2026-03-31', 2.00, 30000.00, 100000.00, 'ACTIVE', 'Standard 2% for corporate/firm contractors.'),
-    ('rule-1961-194ja', 'IT_ACT_1961', '194J(a)', '94J', 'Fees for Technical Services (FTS) and Call Centers', '2020-04-01', '2026-03-31', 2.00, 30000.00, 30000.00, 'ACTIVE', 'Finance Act 2020 reduced FTS rate to 2% regardless of entity type.'),
-    ('rule-1961-194jb', 'IT_ACT_1961', '194J(b)', '94J', 'Fees for Professional Services and Royalty', '1995-07-01', '2026-03-31', 10.00, 30000.00, 30000.00, 'ACTIVE', 'Standard 10% rate for professional advisory.'),
-    ('rule-1961-194i', 'IT_ACT_1961', '194I', '94I', 'Rent for Land, Building, or Office Furniture', '1994-06-01', '2026-03-31', 10.00, 240000.00, 240000.00, 'ACTIVE', '10% on land/building rent.'),
+    ('rule-1961-194c', 'IT_ACT_1961', '194C', '94C', 'Payments to Contractors and Sub-contractors', '1961-04-01', '2026-03-31', 2.00, 30000.00, 100000.00, 'draft', 'Standard 2% for corporate/firm contractors.'),
+    ('rule-1961-194ja', 'IT_ACT_1961', '194J(a)', '94J', 'Fees for Technical Services (FTS) and Call Centers', '2020-04-01', '2026-03-31', 2.00, 30000.00, 30000.00, 'draft', 'Finance Act 2020 reduced FTS rate to 2% regardless of entity type.'),
+    ('rule-1961-194jb', 'IT_ACT_1961', '194J(b)', '94J', 'Fees for Professional Services and Royalty', '1995-07-01', '2026-03-31', 10.00, 30000.00, 30000.00, 'draft', 'Standard 10% rate for professional advisory.'),
+    ('rule-1961-194i', 'IT_ACT_1961', '194I', '94I', 'Rent for Land, Building, or Office Furniture', '1994-06-01', '2026-03-31', 10.00, 240000.00, 240000.00, 'draft', '10% on land/building rent.'),
     ('rule-1961-194h-pre2024', 'IT_ACT_1961', '194H', '94H', 'Commission or Brokerage (Pre-Oct 2024)', '2001-06-01', '2024-09-30', 5.00, 15000.00, 15000.00, 'SUPERSEDED', 'Historical 5% statutory rate in force until 2024-09-30.'),
-    ('rule-1961-194h-post2024', 'IT_ACT_1961', '194H', '94H', 'Commission or Brokerage (Post-Oct 2024)', '2024-10-01', '2026-03-31', 2.00, 15000.00, 15000.00, 'ACTIVE', 'Finance Act 2024 reduced rate to 2% w.e.f. October 1, 2024.'),
-    ('rule-1961-194q', 'IT_ACT_1961', '194Q', '94Q', 'Payment on Purchase of Goods (> ₹50L aggregate)', '2021-07-01', '2026-03-31', 0.10, 5000000.00, 5000000.00, 'ACTIVE', '0.1% TDS on purchase value exceeding ₹50 Lakhs.'),
-    ('rule-2025-sec393-framework', 'IT_ACT_2025', NULL, NULL, 'Income-tax Act 2025 Section 393 Withholding Framework', '2026-04-01', NULL, NULL, NULL, NULL, 'NEEDS_CA_REVIEW', 'New simplified withholding framework under Section 393 of the Income-tax Act 2025. Statutory mapping pending CA review.')
+    ('rule-1961-194h-post2024', 'IT_ACT_1961', '194H', '94H', 'Commission or Brokerage (Post-Oct 2024)', '2024-10-01', '2026-03-31', 2.00, 15000.00, 15000.00, 'draft', 'Finance Act 2024 reduced rate to 2% w.e.f. October 1, 2024.'),
+    ('rule-1961-194q', 'IT_ACT_1961', '194Q', '94Q', 'Payment on Purchase of Goods (> ₹50L aggregate)', '2021-07-01', '2026-03-31', 0.10, 5000000.00, 5000000.00, 'draft', '0.1% TDS on purchase value exceeding ₹50 Lakhs.'),
+    ('rule-2025-sec393-framework', 'IT_ACT_2025', NULL, NULL, 'Income-tax Act 2025 Section 393 Withholding Framework', '2026-04-01', NULL, NULL, NULL, NULL, 'draft', 'New simplified withholding framework under Section 393 of the Income-tax Act 2025. Statutory mapping pending CA review.')
 ON CONFLICT (id) DO NOTHING;

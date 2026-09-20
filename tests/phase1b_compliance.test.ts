@@ -97,10 +97,10 @@ describe('Phase 1b: Statutory Rule Review Trail & In-Code Threshold Ban', () => 
          effective_from, effective_to, rate, threshold_single, threshold_aggregate,
          source_citation, reviewed_by, reviewed_at, status, notes
        ) VALUES (
-         $1, 'IT_ACT_2025', '393(1) Table Sl. No. 6(iii).D(b)', '1014', 'Draft Professional Fees Rule',
-         '2026-04-01', NULL, 10.00, 50000.00, 50000.00,
-         'Income-tax Act, 2025, Section 393(1) Table', NULL, NULL, 'draft', 'Needs CA review'
-       ) ON CONFLICT (id) DO UPDATE SET status = 'draft', reviewed_by = NULL;`,
+          $1, 'IT_ACT_2025', '393(1) Table Sl. No. 6(iii).D(b)', '1014', 'Draft Professional Fees Rule',
+          '2026-04-01', NULL, 10.00, 50000.00, 50000.00,
+          'Income-tax Act, 2025, Section 393(1) Table Sl. No. 6(iii).D(b) https://incometaxindia.gov.in', NULL, NULL, 'draft', 'Needs CA review'
+        ) ON CONFLICT (id) DO UPDATE SET status = 'draft', reviewed_by = NULL, source_citation = EXCLUDED.source_citation;`,
       [draftRuleId]
     );
 
@@ -141,7 +141,7 @@ describe('Phase 1b: Statutory Rule Review Trail & In-Code Threshold Ban', () => 
     );
     assert.match(cert.sectionDescription, /rates unverified/i);
     assert.equal(cert.tdsRate, null, 'Draft rule must not be used for tax rate calculation');
-    assert.equal(cert.tdsAmount, 0, 'Draft rule must not calculate TDS amount');
+    assert.equal(cert.tdsAmount, null, 'Phase 1c: Draft/unverified rule must produce null (unknown), never 0');
 
     // Attempting CA sign-off on a draft rule must be rejected with 400 Bad Request
     const signReq = new NextRequest('http://localhost:3010/api/tds-certificates', {
@@ -203,6 +203,14 @@ describe('Phase 1b: CBDT Circular 23/2017 (GST Excluded from TDS Base)', () => {
        VALUES ($1, $2, 'Enterprise Legal Counsel LLP', '27AABCE1111K1Z3', '194J(b)', 'AABCE1111K')
        ON CONFLICT (id) DO UPDATE SET tds_section = '194J(b)', pan = 'AABCE1111K';`,
       [vendorId, TEST_ORG_ID]
+    );
+
+    // Phase 1c: Tenant CA acknowledges rule adoption for org to verify rate
+    await db.query(
+      `INSERT INTO org_statutory_acknowledgements (id, org_id, rule_id, acknowledged_by, notes)
+       VALUES ('ack-p1b-gst', $1, 'rule-1961-194jb', 'user-p1b-gst-ca', 'Adopted for GST exclusion test')
+       ON CONFLICT (org_id, rule_id) DO NOTHING;`,
+      [TEST_ORG_ID]
     );
 
     // Bill has total_amount = ₹1,18,000 and tax_amount = ₹18,000 (18% GST).
@@ -273,6 +281,14 @@ describe('Phase 1b: Statutory Thresholds & YTD Vendor Gross Tracking', () => {
        VALUES ($1, $2, 'Small Repairs Contractor', '27AABCS3333K1Z4', '194C', 'AABCS3333K')
        ON CONFLICT (id) DO UPDATE SET tds_section = '194C', pan = 'AABCS3333K';`,
       [vendorId, TEST_ORG_ID]
+    );
+
+    // Phase 1c: Acknowledge 194C for org to verify threshold parameters
+    await db.query(
+      `INSERT INTO org_statutory_acknowledgements (id, org_id, rule_id, acknowledged_by, notes)
+       VALUES ('ack-p1b-thresh', $1, 'rule-1961-194c', 'user-p1b-thresh-ca', 'Adopted for threshold test')
+       ON CONFLICT (org_id, rule_id) DO NOTHING;`,
+      [TEST_ORG_ID]
     );
 
     // Bill of ₹12,000 in Q1 2024-25.
@@ -430,6 +446,14 @@ describe('Phase 1b: Challan Math, Isolation, and Production Exclusion Tests', ()
        VALUES ($1, $2, 'Vendor RR 1', '27AABCV1234K1Z0', '194J(b)', 'AABCV1234K')
        ON CONFLICT (id) DO UPDATE SET tds_section = '194J(b)', pan = 'AABCV1234K';`,
       [v1, TEST_ORG]
+    );
+
+    // Phase 1c: Acknowledge rule adoption for TEST_ORG so rates are verified
+    await db.query(
+      `INSERT INTO org_statutory_acknowledgements (id, org_id, rule_id, acknowledged_by, notes)
+       VALUES ('ack-p1b-rr', $1, 'rule-1961-194jb', 'user-rr-ca', 'Adopted for returnReady test')
+       ON CONFLICT (org_id, rule_id) DO NOTHING;`,
+      [TEST_ORG]
     );
 
     await db.query(
