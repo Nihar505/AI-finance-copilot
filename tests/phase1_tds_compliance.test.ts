@@ -66,7 +66,10 @@ describe('Phase 1: Statutory Rules & Entity Type Invariance', () => {
 
     const rule2025 = lookupStatutoryRule('194C', '2026-05-01');
     assert.ok(rule2025, '2025 Act rule should be returned for 2026-05-01');
-    assert.equal(rule2025.status, 'NEEDS_CA_REVIEW');
+    assert.ok(
+      rule2025.status === 'draft' || rule2025.status === 'NEEDS_CA_REVIEW',
+      '2025 Act rule must be in unverified/draft status'
+    );
     assert.equal(rule2025.section, undefined, '2025 Act section mapping must be empty until CA supplies it');
     assert.equal(rule2025.paymentCode, undefined, '2025 Act payment code must be empty until CA supplies it');
   });

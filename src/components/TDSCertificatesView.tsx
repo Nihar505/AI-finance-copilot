@@ -160,12 +160,16 @@ export const TDSCertificatesView: React.FC<TDSCertificatesViewProps> = ({
       'GSTIN',
       'Section',
       'Section Description',
-      'Gross Amount (INR)',
+      'Invoice Total (incl. GST)',
+      'GST Excluded (INR)',
+      'Net Taxable Base (excl. GST)',
       'TDS Rate (%)',
       'TDS Deducted (INR)',
       'Challan No',
       'BSR Code',
       'Deposit Date',
+      'Challan Source',
+      'Rule Status',
       'Status',
       'Signed By',
       'Signed At',
@@ -178,12 +182,16 @@ export const TDSCertificatesView: React.FC<TDSCertificatesViewProps> = ({
       c.vendorGstin || 'DATA MISSING',
       c.section || 'PENDING_REVIEW',
       `"${c.sectionDescription}"`,
+      (c.invoiceTotal || c.grossAmount).toFixed(2),
+      (c.gstAmount || 0).toFixed(2),
       c.grossAmount.toFixed(2),
-      c.tdsRate !== null ? `${c.tdsRate}%` : 'DATA MISSING',
+      c.tdsRate !== null ? `${c.tdsRate}%` : c.isBelowThreshold ? '0% (Exempt)' : 'UNVERIFIED',
       c.tdsAmount.toFixed(2),
       c.challanNumber || 'UNALLOCATED',
       c.challanBsr || 'UNALLOCATED',
       c.depositDate || 'UNALLOCATED',
+      c.allocatedChallanSource || '',
+      c.ruleStatus || 'unreviewed',
       c.status,
       c.signedBy || '',
       c.signedAt || '',
@@ -192,6 +200,7 @@ export const TDSCertificatesView: React.FC<TDSCertificatesViewProps> = ({
     const csvContent = [
       '# TDS DEDUCTION REGISTER / 26Q PREPARATION WORKSHEET',
       `# Deductor: ${deductor?.name || ''} | TAN: ${deductor?.tan || 'DATA MISSING'} | Period: ${quarter} ${financialYear}`,
+      `# Note: CBDT Circular 23/2017 applied — TDS base excludes separately indicated GST.`,
       `# Total Deducted: INR ${summary?.totalTdsDeducted || 0} | Total Deposited: INR ${summary?.totalTdsDeposited || 0}`,
       headers.join(','),
       ...rows.map((r) => r.join(',')),
@@ -613,7 +622,7 @@ export const TDSCertificatesView: React.FC<TDSCertificatesViewProps> = ({
                 <th style={{ padding: '10px 14px', fontWeight: 600 }}>DEDUCTEE / VENDOR</th>
                 <th style={{ padding: '10px 14px', fontWeight: 600 }}>PAN</th>
                 <th style={{ padding: '10px 14px', fontWeight: 600 }}>SECTION</th>
-                <th style={{ padding: '10px 14px', fontWeight: 600, textAlign: 'right' }}>GROSS PAID</th>
+                <th style={{ padding: '10px 14px', fontWeight: 600, textAlign: 'right' }}>GROSS BASE (EXCL. GST)</th>
                 <th style={{ padding: '10px 14px', fontWeight: 600, textAlign: 'right' }}>RATE</th>
                 <th style={{ padding: '10px 14px', fontWeight: 600, textAlign: 'right' }}>TDS DEDUCTED</th>
                 <th style={{ padding: '10px 14px', fontWeight: 600 }}>CHALLAN & DEPOSIT</th>
@@ -633,6 +642,7 @@ export const TDSCertificatesView: React.FC<TDSCertificatesViewProps> = ({
                   const secStyle = getSectionBadgeStyle(cert.section);
                   const isSigned = cert.status === 'signed_off';
                   const isMissing = cert.status === 'data_missing';
+                  const isUnverified = cert.missingFields?.includes('rates_unverified');
 
                   return (
                     <tr
@@ -714,30 +724,78 @@ export const TDSCertificatesView: React.FC<TDSCertificatesViewProps> = ({
                         </div>
                       </td>
 
-                      {/* Gross Paid */}
+                      {/* Gross Paid (Excluding GST) */}
                       <td style={{ padding: '12px 14px', textAlign: 'right', fontWeight: 600, color: 'var(--text-primary)' }}>
                         ₹{cert.grossAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {cert.cbdtGstExclusionApplied && (
+                          <div
+                            style={{
+                              fontSize: '0.66rem',
+                              color: '#38bdf8',
+                              marginTop: 2,
+                              fontWeight: 500,
+                              cursor: 'help',
+                            }}
+                            title="CBDT Circular 23/2017: TDS base excludes separately indicated GST. Subject to CA confirmation."
+                          >
+                            CBDT 23/2017 (Net Base)
+                          </div>
+                        )}
                       </td>
 
                       {/* Rate */}
                       <td style={{ padding: '12px 14px', textAlign: 'right', color: 'var(--text-secondary)', fontWeight: 600 }}>
-                        {cert.tdsRate !== null ? `${cert.tdsRate}%` : '—'}
+                        {cert.isBelowThreshold ? (
+                          <span
+                            style={{
+                              fontSize: '0.7rem',
+                              padding: '2px 6px',
+                              borderRadius: 4,
+                              backgroundColor: 'rgba(34,197,94,0.15)',
+                              color: '#4ade80',
+                            }}
+                          >
+                            Exempt
+                          </span>
+                        ) : cert.tdsRate !== null ? (
+                          `${cert.tdsRate}%`
+                        ) : (
+                          '—'
+                        )}
                       </td>
 
                       {/* TDS Deducted */}
-                      <td style={{ padding: '12px 14px', textAlign: 'right', fontWeight: 700, color: '#38bdf8' }}>
+                      <td style={{ padding: '12px 14px', textAlign: 'right', fontWeight: 700, color: cert.isBelowThreshold ? 'var(--text-muted)' : '#38bdf8' }}>
                         ₹{cert.tdsAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {cert.isBelowThreshold && (
+                          <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: 2 }}>&lt; Threshold</div>
+                        )}
                       </td>
 
                       {/* Challan */}
                       <td style={{ padding: '12px 14px' }}>
                         {cert.isAllocated ? (
                           <>
-                            <div style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: 'var(--text-primary)' }}>
-                              {cert.challanNumber}
+                            <div style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span>{cert.challanNumber || (cert.isBelowThreshold ? 'Exempt' : 'Allocated')}</span>
+                              {cert.allocatedChallanSource === 'demo' && (
+                                <span
+                                  style={{
+                                    fontSize: '0.62rem',
+                                    padding: '1px 5px',
+                                    borderRadius: 3,
+                                    backgroundColor: 'rgba(234,179,8,0.15)',
+                                    color: '#facc15',
+                                    border: '1px solid rgba(234,179,8,0.3)',
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  Demo Challan
+                                </span>
+                              )}
                             </div>
                             <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                              BSR: {cert.challanBsr} • {cert.depositDate}
+                              {cert.challanBsr ? `BSR: ${cert.challanBsr} • ${cert.depositDate}` : cert.isBelowThreshold ? 'Below Threshold — No Deposit Required' : 'Allocated'}
                             </div>
                           </>
                         ) : (
@@ -765,6 +823,19 @@ export const TDSCertificatesView: React.FC<TDSCertificatesViewProps> = ({
                               <div style={{ fontSize: '0.75rem', fontWeight: 600 }}>Signed by CA</div>
                               <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
                                 {cert.signedBy}
+                              </div>
+                            </div>
+                          </div>
+                        ) : isUnverified ? (
+                          <div
+                            style={{ display: 'flex', alignItems: 'center', gap: 5, color: '#f59e0b' }}
+                            title="Rates unverified: Statutory rule is in draft status. A CA must approve statutory mapping before sign-off."
+                          >
+                            <AlertTriangle size={14} />
+                            <div>
+                              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#f59e0b' }}>rates unverified</div>
+                              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                                CA Review Needed
                               </div>
                             </div>
                           </div>
