@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS organizations (
     name VARCHAR(255) NOT NULL,
     legal_name VARCHAR(255),
     tax_id VARCHAR(50),
+    tan VARCHAR(20),
+    address TEXT,
     currency VARCHAR(10) DEFAULT 'INR',
     fiscal_year_start VARCHAR(10) DEFAULT '04-01',
     materiality_threshold NUMERIC(15, 2) DEFAULT 50000.00,
@@ -15,6 +17,8 @@ CREATE TABLE IF NOT EXISTS organizations (
 
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS materiality_threshold NUMERIC(15, 2) DEFAULT 50000.00;
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS suggest_only_mode BOOLEAN DEFAULT TRUE;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tan VARCHAR(20);
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS address TEXT;
 
 CREATE TABLE IF NOT EXISTS users (
     id VARCHAR(50) PRIMARY KEY,
@@ -65,10 +69,16 @@ CREATE TABLE IF NOT EXISTS vendors (
     org_id VARCHAR(50) REFERENCES organizations(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     tax_id VARCHAR(50),
+    tds_section VARCHAR(20),
+    pan VARCHAR(10),
     email VARCHAR(255),
     default_category_id VARCHAR(50) REFERENCES chart_of_accounts(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE vendors ADD COLUMN IF NOT EXISTS tds_section VARCHAR(20);
+ALTER TABLE vendors ADD COLUMN IF NOT EXISTS pan VARCHAR(10);
+CREATE INDEX IF NOT EXISTS idx_vendors_org_tds_sec ON vendors (org_id, tds_section);
 
 CREATE TABLE IF NOT EXISTS customers (
     id VARCHAR(50) PRIMARY KEY,
@@ -287,3 +297,62 @@ CREATE TABLE IF NOT EXISTS gstr2b_entries (
 
 CREATE INDEX IF NOT EXISTS idx_gstr2b_org_period ON gstr2b_entries(org_id, period);
 CREATE INDEX IF NOT EXISTS idx_gstr2b_supplier_inv ON gstr2b_entries(org_id, supplier_gstin, invoice_number);
+
+-- ─── Persistent TDS Sign-offs Table ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tds_signoffs (
+    id VARCHAR(100) PRIMARY KEY,
+    org_id VARCHAR(50) NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    cert_id VARCHAR(100) NOT NULL,
+    signed_by VARCHAR(100) NOT NULL,
+    signed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tds_signoffs_org_cert UNIQUE (org_id, cert_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tds_signoffs_org ON tds_signoffs (org_id);
+
+-- ─── Deductor-Level TDS Challans Table ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tds_challans (
+    id VARCHAR(50) PRIMARY KEY,
+    org_id VARCHAR(50) NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    challan_no VARCHAR(50) NOT NULL,
+    bsr_code VARCHAR(10) NOT NULL,
+    deposit_date DATE NOT NULL,
+    amount NUMERIC(15, 2) NOT NULL CHECK (amount >= 0),
+    section VARCHAR(20) NOT NULL,
+    quarter VARCHAR(10) NOT NULL,
+    financial_year VARCHAR(20) NOT NULL,
+    source VARCHAR(20) DEFAULT 'manual', -- 'manual', 'demo', 'portal'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tds_challans UNIQUE (org_id, challan_no, bsr_code, deposit_date)
+);
+CREATE INDEX IF NOT EXISTS idx_tds_challans_org_period ON tds_challans (org_id, section, quarter, financial_year);
+
+-- ─── TDS Challan Allocations Table (Line-Item Attribution) ──────────────────
+CREATE TABLE IF NOT EXISTS tds_challan_allocations (
+    id VARCHAR(50) PRIMARY KEY,
+    org_id VARCHAR(50) NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    challan_id VARCHAR(50) NOT NULL REFERENCES tds_challans(id) ON DELETE CASCADE,
+    deduction_line_id VARCHAR(100) NOT NULL,
+    allocated_amount NUMERIC(15, 2) NOT NULL CHECK (allocated_amount >= 0),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tds_challan_allocation UNIQUE (challan_id, deduction_line_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tds_challan_alloc_line ON tds_challan_allocations (org_id, deduction_line_id);
+
+-- ─── Versioned Statutory TDS Rules Table ────────────────────────────────────
+CREATE TABLE IF NOT EXISTS statutory_tds_rules (
+    id VARCHAR(50) PRIMARY KEY,
+    legal_regime VARCHAR(50) NOT NULL, -- 'IT_ACT_1961' | 'IT_ACT_2025'
+    section VARCHAR(50),
+    payment_code VARCHAR(50),
+    description TEXT NOT NULL,
+    effective_from DATE NOT NULL,
+    effective_to DATE,
+    rate NUMERIC(5, 2),
+    threshold_single NUMERIC(15, 2),
+    threshold_aggregate NUMERIC(15, 2),
+    status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE', -- 'ACTIVE', 'SUPERSEDED', 'NEEDS_CA_REVIEW'
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_statutory_rules_regime ON statutory_tds_rules (legal_regime, effective_from);
+

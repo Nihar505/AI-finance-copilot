@@ -41,12 +41,14 @@ export async function seedBaseData() {
 
   // 1. Organizations
   await db.query(
-    `INSERT INTO organizations (id, name, legal_name, tax_id, currency, fiscal_year_start, materiality_threshold, suggest_only_mode)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO organizations (id, name, legal_name, tax_id, tan, address, currency, fiscal_year_start, materiality_threshold, suggest_only_mode)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (id) DO UPDATE SET
        name = EXCLUDED.name,
        legal_name = EXCLUDED.legal_name,
        tax_id = EXCLUDED.tax_id,
+       tan = EXCLUDED.tan,
+       address = EXCLUDED.address,
        materiality_threshold = EXCLUDED.materiality_threshold,
        suggest_only_mode = EXCLUDED.suggest_only_mode;`,
     [
@@ -54,6 +56,8 @@ export async function seedBaseData() {
       'Apex Global Advisory & Co.',
       'Apex Global Advisory Services LLP',
       '27AAACA9876Q1ZA',
+      'MUMA99821C',
+      'Level 12, Express Towers, Nariman Point, Mumbai 400021',
       'INR',
       '04-01',
       50000.00,
@@ -62,12 +66,14 @@ export async function seedBaseData() {
   );
 
   await db.query(
-    `INSERT INTO organizations (id, name, legal_name, tax_id, currency, fiscal_year_start, materiality_threshold, suggest_only_mode)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO organizations (id, name, legal_name, tax_id, tan, address, currency, fiscal_year_start, materiality_threshold, suggest_only_mode)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (id) DO UPDATE SET
        name = EXCLUDED.name,
        legal_name = EXCLUDED.legal_name,
        tax_id = EXCLUDED.tax_id,
+       tan = EXCLUDED.tan,
+       address = EXCLUDED.address,
        materiality_threshold = EXCLUDED.materiality_threshold,
        suggest_only_mode = EXCLUDED.suggest_only_mode;`,
     [
@@ -75,6 +81,8 @@ export async function seedBaseData() {
       'Zenith Tech Labs Pvt Ltd',
       'Zenith Tech Labs Private Limited',
       '29AABCT1234K1Z0',
+      'BLRZ12345D',
+      '4th Floor, Salarpuria Windsor, Ulsoor, Bengaluru 560042',
       'INR',
       '04-01',
       25000.00,
@@ -184,21 +192,25 @@ export async function seedBaseData() {
 
   // 6. Vendors
   const vendors = [
-    { id: 'ven-01', name: 'Amazon Web Services India Pvt Ltd', tax_id: '27AABCA1234D1ZP', default_category_id: 'acc-5010' },
-    { id: 'ven-02', name: 'Google Cloud India Pvt Ltd', tax_id: '27AABCG5678M1ZQ', default_category_id: 'acc-5020' },
-    { id: 'ven-03', name: 'WeWork India Management Pvt Ltd', tax_id: '27AACCW9988L1ZT', default_category_id: 'acc-5040' },
-    { id: 'ven-04', name: 'Dell India Enterprise Pvt Ltd', tax_id: null, default_category_id: 'acc-1500' }, // Missing Tax ID deliberate exception
-    { id: 'ven-05', name: 'Bharti Airtel Limited', tax_id: '27AAACB0011F1ZX', default_category_id: 'acc-5080' },
-    { id: 'ven-06', name: 'Razorpay Software Pvt Ltd', tax_id: '27AABCR4433P1ZR', default_category_id: 'acc-5090' },
-    { id: 'ven-07', name: 'Slack Technologies Inc.', tax_id: '9920USA998811AA', default_category_id: 'acc-5020' }
+    { id: 'ven-01', name: 'Amazon Web Services India Pvt Ltd', tax_id: '27AABCA1234D1ZP', tds_section: '194J(a)', pan: 'AABCA1234D', default_category_id: 'acc-5010' },
+    { id: 'ven-02', name: 'Google Cloud India Pvt Ltd', tax_id: '27AABCG5678M1ZQ', tds_section: '194J(a)', pan: 'AABCG5678M', default_category_id: 'acc-5020' },
+    { id: 'ven-03', name: 'WeWork India Management Pvt Ltd', tax_id: '27AACCW9988L1ZT', tds_section: '194I', pan: 'AACCW9988L', default_category_id: 'acc-5040' },
+    { id: 'ven-04', name: 'Dell India Enterprise Pvt Ltd', tax_id: null, tds_section: '194Q', pan: null, default_category_id: 'acc-1500' }, // Missing Tax ID deliberate exception
+    { id: 'ven-05', name: 'Bharti Airtel Limited', tax_id: '27AAACB0011F1ZX', tds_section: '194C', pan: 'AAACB0011F', default_category_id: 'acc-5080' },
+    { id: 'ven-06', name: 'Razorpay Software Pvt Ltd', tax_id: '27AABCR4433P1ZR', tds_section: '194H', pan: 'AABCR4433P', default_category_id: 'acc-5090' },
+    { id: 'ven-07', name: 'Slack Technologies Inc.', tax_id: '9920USA998811AA', tds_section: null, pan: null, default_category_id: 'acc-5020' }
   ];
 
   for (const v of vendors) {
     await db.query(
-      `INSERT INTO vendors (id, org_id, name, tax_id, default_category_id)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (id) DO NOTHING;`,
-      [v.id, ORG_ID, v.name, v.tax_id, v.default_category_id]
+      `INSERT INTO vendors (id, org_id, name, tax_id, default_category_id, tds_section, pan)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (id) DO UPDATE SET
+         tax_id = EXCLUDED.tax_id,
+         default_category_id = EXCLUDED.default_category_id,
+         tds_section = EXCLUDED.tds_section,
+         pan = EXCLUDED.pan;`,
+      [v.id, ORG_ID, v.name, v.tax_id, v.default_category_id, v.tds_section, v.pan]
     );
   }
 
@@ -234,6 +246,9 @@ export async function seedRealisticSandboxData() {
     DELETE FROM invoices WHERE org_id IN ('${ORG_ID}', '${ORG_ZENITH_ID}');
     DELETE FROM bills WHERE org_id IN ('${ORG_ID}', '${ORG_ZENITH_ID}');
     DELETE FROM documents WHERE org_id IN ('${ORG_ID}', '${ORG_ZENITH_ID}');
+    DELETE FROM tds_signoffs WHERE org_id IN ('${ORG_ID}', '${ORG_ZENITH_ID}');
+    DELETE FROM tds_challan_allocations WHERE org_id IN ('${ORG_ID}', '${ORG_ZENITH_ID}');
+    DELETE FROM tds_challans WHERE org_id IN ('${ORG_ID}', '${ORG_ZENITH_ID}');
   `);
 
   // Create document batches
@@ -337,6 +352,41 @@ export async function seedRealisticSandboxData() {
         t.counterparty,
         t.ref
       ]
+    );
+  }
+
+  // Demo TDS Challans and Allocations (source: 'demo')
+  const demoChallans = [
+    { id: 'chl-demo-194i', no: 'CHL-2024-Q3-194I', bsr: '0210084', date: '2024-11-07', amount: 11500.00, sec: '194I' },
+    { id: 'chl-demo-194ja', no: 'CHL-2024-Q3-194JA', bsr: '0210084', date: '2024-11-07', amount: 1218.00, sec: '194J(a)' },
+    { id: 'chl-demo-194c', no: 'CHL-2024-Q3-194C', bsr: '0210084', date: '2024-11-07', amount: 256.00, sec: '194C' },
+    { id: 'chl-demo-194h', no: 'CHL-2024-Q3-194H', bsr: '0210084', date: '2024-11-07', amount: 129.00, sec: '194H' },
+  ];
+
+  for (const c of demoChallans) {
+    await db.query(
+      `INSERT INTO tds_challans (id, org_id, challan_no, bsr_code, deposit_date, amount, section, quarter, financial_year, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'Q3', '2024-25', 'demo')
+       ON CONFLICT (id) DO NOTHING;`,
+      [c.id, ORG_ID, c.no, c.bsr, c.date, c.amount, c.sec]
+    );
+  }
+
+  // Demo allocations
+  const demoAllocations = [
+    { id: 'alloc-demo-01', challanId: 'chl-demo-194i', lineId: 'CERT-202425-Q3-ven-03', amount: 11500.00 },
+    { id: 'alloc-demo-02', challanId: 'chl-demo-194ja', lineId: 'CERT-202425-Q3-ven-01', amount: 850.00 },
+    { id: 'alloc-demo-03', challanId: 'chl-demo-194ja', lineId: 'CERT-202425-Q3-ven-02', amount: 368.00 },
+    { id: 'alloc-demo-04', challanId: 'chl-demo-194c', lineId: 'CERT-202425-Q3-ven-05', amount: 256.00 },
+    { id: 'alloc-demo-05', challanId: 'chl-demo-194h', lineId: 'CERT-202425-Q3-ven-06', amount: 129.00 },
+  ];
+
+  for (const a of demoAllocations) {
+    await db.query(
+      `INSERT INTO tds_challan_allocations (id, org_id, challan_id, deduction_line_id, allocated_amount)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (id) DO NOTHING;`,
+      [a.id, ORG_ID, a.challanId, a.lineId, a.amount]
     );
   }
 

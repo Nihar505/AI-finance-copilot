@@ -19,7 +19,7 @@ export interface GstBreakdown {
 }
 
 export interface TdsCalculation {
-  section: '194C' | '194J' | '194I' | '194Q' | '194H';
+  section: '194C' | '194J' | '194J(a)' | '194J(b)' | '194I' | '194Q' | '194H' | string;
   grossAmount: number;
   applicableRate: number; // percentage
   tdsAmount: number;
@@ -124,14 +124,20 @@ export function calculateGst(
 /**
  * Deterministic TDS Calculation under the Indian Income Tax Act 1961.
  * Applies Section 206AA (mandatory 20% withholding if valid PAN is absent).
+ * Sub-section 194J(a) (FTS, 2%) vs 194J(b) (Professional, 10%) are statutory distinctions
+ * and are invariant of entity type (isCompanyOrLLP).
  */
 export function calculateTds(
   grossAmount: number,
-  section: '194C' | '194J' | '194I' | '194Q' | '194H',
-  hasValidPan: boolean,
+  section: '194C' | '194J' | '194J(a)' | '194J(b)' | '194I' | '194Q' | '194H' | string,
+  hasValidPanOrPan: boolean | string,
   isCompanyOrLLP: boolean = true
 ): TdsCalculation {
   const cleanGross = Math.max(0, roundCurrency(grossAmount));
+  const hasValidPan =
+    typeof hasValidPanOrPan === 'string'
+      ? /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(hasValidPanOrPan.trim().toUpperCase())
+      : Boolean(hasValidPanOrPan);
 
   // Section 206AA Check: If valid PAN is missing, minimum rate is 20%
   if (!hasValidPan) {
@@ -148,20 +154,30 @@ export function calculateTds(
     };
   }
 
-  // Standard statutory rates under IT Act
+  // Standard statutory rates under IT Act 1961
   let rate = 10.0;
   let desc = '';
 
   switch (section) {
     case '194C':
-      // 1% for individual/HUF, 2% for others
+      // 1% for individual/HUF, 2% for corporate/firm
       rate = isCompanyOrLLP ? 2.0 : 1.0;
       desc = `Section 194C Payments to Contractors (${rate}%)`;
       break;
+    case '194J(a)':
+      // 2% for Technical Services / FTS (FA 2020) invariant of deductee entity type
+      rate = 2.0;
+      desc = `Section 194J(a) Fees for Technical Services (2.0%)`;
+      break;
+    case '194J(b)':
+      // 10% for Professional Services / Royalty invariant of deductee entity type
+      rate = 10.0;
+      desc = `Section 194J(b) Fees for Professional Services (10.0%)`;
+      break;
     case '194J':
-      // 10% for professional services / royalty, 2% for technical services / call centers
-      rate = isCompanyOrLLP ? 2.0 : 10.0;
-      desc = `Section 194J Fees for Professional / Technical Services (${rate}%)`;
+      // Legacy unclassified: default to 10% and mark for CA review
+      rate = 10.0;
+      desc = `Section 194J Fees for Professional / Technical Services (10.0% - NEEDS_CA_REVIEW)`;
       break;
     case '194I':
       // 10% for land/building/furniture, 2% for plant & machinery
@@ -174,13 +190,13 @@ export function calculateTds(
       desc = `Section 194Q Purchase of Goods (> ₹50 Lakhs) (0.1%)`;
       break;
     case '194H':
-      // 5% on Commission or Brokerage
-      rate = 5.0;
-      desc = `Section 194H Commission or Brokerage (5%)`;
+      // 2% on Commission or Brokerage (FA 2024 w.e.f. Oct 1, 2024)
+      rate = 2.0;
+      desc = `Section 194H Commission or Brokerage (2.0%)`;
       break;
     default:
       rate = 10.0;
-      desc = `Standard TDS Rate (10%)`;
+      desc = `Standard Statutory TDS Rate (10.0% - NEEDS_CA_REVIEW)`;
   }
 
   const tdsAmount = roundCurrency(cleanGross * (rate / 100));
