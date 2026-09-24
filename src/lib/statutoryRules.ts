@@ -19,6 +19,8 @@
  * Statutory Form Names are configuration-driven rather than hardcoded strings.
  */
 
+import crypto from 'crypto';
+
 export type LegalRegime = 'IT_ACT_1961' | 'IT_ACT_2025';
 
 export interface StatutoryTdsRule {
@@ -32,6 +34,7 @@ export interface StatutoryTdsRule {
   rate?: number | null;              // Percentage (e.g., 2.0 for 2%) — null if unverified
   thresholdSingle?: number | null;   // Single transaction threshold in INR (loaded from DB)
   thresholdAggregate?: number | null;// Annual aggregate threshold in INR (loaded from DB)
+  thresholdNotApplicable?: boolean;  // Explicit flag if threshold is not applicable
   sourceCitation?: string | null;    // Primary statute/circular citation
   reviewedBy?: string | null;        // CA reviewer identity
   reviewedAt?: string | null;        // Timestamp of review
@@ -172,7 +175,7 @@ export const STATUTORY_TDS_RULES: StatutoryTdsRule[] = [
     effectiveFrom: '2026-04-01',
     effectiveTo: undefined,
     rate: undefined,
-    sourceCitation: 'https://incometaxindia.gov.in; Income-tax Act, 2025, Section 393 framework.',
+    sourceCitation: null,
     reviewedBy: null,
     reviewedAt: null,
     status: 'draft',
@@ -341,3 +344,56 @@ export function getQuarterDateBounds(financialYear: string, quarter: 'Q1' | 'Q2'
       return { start: `${startYear + 1}-01-01`, end: `${startYear + 1}-03-31` };
   }
 }
+
+/**
+ * Computes a deterministic SHA-256 hash representing the substantive statutory content of a rule.
+ * Canonicalizes numbers (e.g. 2 vs 2.0 -> "2.0000"), trims strings, and unifies nulls/undefined.
+ */
+export function computeRuleContentHash(rule: {
+  regime?: string | null;
+  legal_regime?: string | null;
+  section?: string | null;
+  sub_section?: string | null;
+  rate?: number | string | null;
+  rate_percent?: number | string | null;
+  thresholdSingle?: number | string | null;
+  single_transaction_threshold?: number | string | null;
+  thresholdAggregate?: number | string | null;
+  aggregate_annual_threshold?: number | string | null;
+  thresholdNotApplicable?: boolean | null;
+  threshold_not_applicable?: boolean | null;
+  effectiveFrom?: string | Date | null;
+  effective_from?: string | Date | null;
+}): string {
+  const regime = (rule.regime || rule.legal_regime || '').trim().toUpperCase();
+  const sec = (rule.section || '').trim().toUpperCase() || 'NULL';
+  const subSec = (rule.sub_section || '').trim().toUpperCase() || 'NULL';
+
+  const rawRate = rule.rate !== undefined ? rule.rate : rule.rate_percent;
+  const canonicalRate = rawRate !== null && rawRate !== undefined && rawRate !== ''
+    ? Number(rawRate).toFixed(4)
+    : 'NULL';
+
+  const rawSingle = rule.thresholdSingle !== undefined ? rule.thresholdSingle : rule.single_transaction_threshold;
+  const canonicalSingle = rawSingle !== null && rawSingle !== undefined && rawSingle !== ''
+    ? Number(rawSingle).toFixed(4)
+    : 'NULL';
+
+  const rawAgg = rule.thresholdAggregate !== undefined ? rule.thresholdAggregate : rule.aggregate_annual_threshold;
+  const canonicalAgg = rawAgg !== null && rawAgg !== undefined && rawAgg !== ''
+    ? Number(rawAgg).toFixed(4)
+    : 'NULL';
+
+  const rawThreshNA = rule.thresholdNotApplicable !== undefined ? rule.thresholdNotApplicable : rule.threshold_not_applicable;
+  const canonicalThreshNA = Boolean(rawThreshNA).toString();
+
+  const rawEff = rule.effectiveFrom || rule.effective_from;
+  let canonicalEff = 'NULL';
+  if (rawEff) {
+    canonicalEff = (rawEff instanceof Date ? rawEff.toISOString() : String(rawEff)).slice(0, 10);
+  }
+
+  const canonicalString = `${regime}|${sec}|${subSec}|${canonicalRate}|${canonicalSingle}|${canonicalAgg}|${canonicalThreshNA}|${canonicalEff}`;
+  return crypto.createHash('sha256').update(canonicalString).digest('hex');
+}
+

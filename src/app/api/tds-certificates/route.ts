@@ -6,6 +6,7 @@ import {
   getCurrentTaxPeriod,
   getQuarterDateBounds,
   lookupStatutoryRule,
+  computeRuleContentHash,
   STATUTORY_FORM_CONFIG,
   LegalRegime,
   StatutoryTdsRule,
@@ -47,6 +48,7 @@ export interface TDSCertificate {
   signedBy?: string | null;
   signedAt?: string | null;
   ruleStatus?: string | null;
+  ruleVerification?: 'platform-verified' | 'firm-acknowledged, not platform-verified' | 'unverified';
   ruleSourceCitation?: string | null;
 }
 
@@ -154,10 +156,13 @@ export async function GET(req: NextRequest) {
 
     // 5b. Fetch per-org statutory rule acknowledgements
     const acksRes = await db.query(
-      'SELECT rule_id, acknowledged_by, acknowledged_at FROM org_statutory_acknowledgements WHERE org_id = $1;',
+      'SELECT rule_id, rule_version_hash, invalidated_at, acknowledged_by, acknowledged_at FROM org_statutory_acknowledgements WHERE org_id = $1;',
       [auth.activeOrgId]
     );
-    const orgAcks = new Set<string>(acksRes.rows.map((r: any) => r.rule_id));
+    const orgAcksMap = new Map<string, { hash: string; invalidatedAt: any }>();
+    for (const r of acksRes.rows) {
+      orgAcksMap.set(r.rule_id, { hash: r.rule_version_hash, invalidatedAt: r.invalidated_at });
+    }
 
     // 6. Year-to-Date (YTD) Vendor Gross Tracking for Statutory Thresholds
     // Query all bills from the start of the financial year up to the end of the requested quarter
@@ -301,6 +306,7 @@ export async function GET(req: NextRequest) {
       let isBelowThreshold = false;
       let ruleStatus: string | null = null;
       let ruleCitation: string | null = null;
+      let ruleVerification: 'platform-verified' | 'firm-acknowledged, not platform-verified' | 'unverified' = 'unverified';
 
       if (!vData.vendorSection) {
         // Unknown vendor without configured section: NEVER invent one
@@ -308,7 +314,7 @@ export async function GET(req: NextRequest) {
         section = null;
         sectionDescription = 'TDS Section Missing — Configure on Vendor Profile';
         tdsRate = null;
-        tdsAmount = 0;
+        tdsAmount = null; // Fix 3: Missing vendor section yields tdsAmount = null (unknown), not 0
       } else {
         section = vData.vendorSection;
         const rule = lookupStatutoryRule(section, vData.latestDate || quarterStart, dbRules);
@@ -321,8 +327,19 @@ export async function GET(req: NextRequest) {
         } else {
           ruleStatus = rule.status;
           ruleCitation = rule.sourceCitation || null;
-          const isOrgAck = orgAcks.has(rule.id);
-          const isRuleVerified = rule.status === 'approved' || isOrgAck;
+          const ack = orgAcksMap.get(rule.id);
+          const currentHash = computeRuleContentHash(rule);
+          const isAckValid = !!ack && !ack.invalidatedAt && ack.hash === currentHash;
+          const isPlatformApproved = rule.status === 'approved';
+          const isRuleVerified = isPlatformApproved || isAckValid;
+
+          if (isPlatformApproved) {
+            ruleVerification = 'platform-verified';
+          } else if (isAckValid) {
+            ruleVerification = 'firm-acknowledged, not platform-verified';
+          } else {
+            ruleVerification = 'unverified';
+          }
 
           // Check if rule is in 'draft' or unverified status
           if (!isRuleVerified) {
@@ -338,65 +355,71 @@ export async function GET(req: NextRequest) {
             sectionDescription = rule.description;
             paymentCode = rule.paymentCode || null;
 
-            // Determine effective statutory rate (or penal rate if PAN missing)
-            let effectiveRate = rule.rate ?? 10.0;
+            // Fix 3: Missing PAN must yield tdsAmount = null (unknown)
             if (!pan) {
-              // Section 206AA penal withholding
-              effectiveRate = 20.0;
-              tdsRate = 20.0;
-              sectionDescription += ' (Section 206AA Penal Rate Applied: Missing PAN)';
+              missingFields.push('vendor_pan');
+              tdsRate = null;
+              tdsAmount = null;
+              sectionDescription += ' (Missing PAN: TDS Amount Unknown — CA Review Required)';
             } else {
+              const effectiveRate = rule.rate ?? 10.0;
               tdsRate = effectiveRate;
-            }
 
-            // Dynamic statutory thresholds & annual aggregate catch-up math
-            const fyBills = (vendorFyBills[vId] || []).slice().sort((a, b) => a.date.localeCompare(b.date));
-            const threshSingle = rule.thresholdSingle !== null && rule.thresholdSingle !== undefined ? Number(rule.thresholdSingle) : null;
-            const threshAggregate = rule.thresholdAggregate !== null && rule.thresholdAggregate !== undefined ? Number(rule.thresholdAggregate) : null;
-            const hasThresholds = threshSingle !== null || threshAggregate !== null;
+              // Dynamic statutory thresholds & annual aggregate catch-up math
+              const fyBills = (vendorFyBills[vId] || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+              const threshSingle = rule.thresholdSingle !== null && rule.thresholdSingle !== undefined ? Number(rule.thresholdSingle) : null;
+              const threshAggregate = rule.thresholdAggregate !== null && rule.thresholdAggregate !== undefined ? Number(rule.thresholdAggregate) : null;
+              const hasThresholds = threshSingle !== null || threshAggregate !== null;
 
-            if (!hasThresholds) {
-              tdsAmount = roundCurrency(vData.quarterTaxableBase * (effectiveRate / 100));
-            } else {
-              let cumulativeFyNetBase = 0;
-              let priorQuarterCumulative = 0;
-              let priorQuarterTaxable = 0;
+              // Amendment 3: NULL threshold on a draft rule => tdsAmount null, never "no threshold"
+              if (!hasThresholds && !rule.thresholdNotApplicable && rule.status !== 'approved') {
+                missingFields.push('statutory_thresholds_missing');
+                tdsRate = null;
+                tdsAmount = null;
+                sectionDescription += ' (Statutory Thresholds Missing on Draft Rule)';
+              } else if (!hasThresholds) {
+                tdsAmount = roundCurrency(vData.quarterTaxableBase * (effectiveRate / 100));
+              } else {
+                let cumulativeFyNetBase = 0;
+                let priorQuarterCumulative = 0;
+                let priorQuarterTaxable = 0;
 
-              for (const bill of fyBills) {
-                cumulativeFyNetBase = roundCurrency(cumulativeFyNetBase + bill.netBase);
-                if (bill.date < quarterStart) {
-                  priorQuarterCumulative = roundCurrency(priorQuarterCumulative + bill.netBase);
-                  if (threshSingle !== null && bill.netBase > threshSingle) {
-                    priorQuarterTaxable = roundCurrency(priorQuarterTaxable + bill.netBase);
+                for (const bill of fyBills) {
+                  cumulativeFyNetBase = roundCurrency(cumulativeFyNetBase + bill.netBase);
+                  if (bill.date < quarterStart) {
+                    priorQuarterCumulative = roundCurrency(priorQuarterCumulative + bill.netBase);
+                    if (threshSingle !== null && bill.netBase > threshSingle) {
+                      priorQuarterTaxable = roundCurrency(priorQuarterTaxable + bill.netBase);
+                    }
                   }
                 }
-              }
 
-              const aggBreached = threshAggregate !== null && cumulativeFyNetBase > threshAggregate;
+                const aggBreached = threshAggregate !== null && cumulativeFyNetBase > threshAggregate;
 
-              if (aggBreached) {
-                // Annual aggregate threshold crossed!
-                // Statutory rule: TDS is due on the whole cumulative amount from the crossing bill onward.
-                const priorQuarterAggBreached = threshAggregate !== null && priorQuarterCumulative > threshAggregate;
-                const priorTaxedBase = priorQuarterAggBreached ? priorQuarterCumulative : priorQuarterTaxable;
-                const priorTdsLiability = roundCurrency(priorTaxedBase * (effectiveRate / 100));
-                const totalTdsLiabilityToDate = roundCurrency(cumulativeFyNetBase * (effectiveRate / 100));
+                if (aggBreached) {
+                  // Annual aggregate threshold crossed!
+                  // Statutory rule: TDS is due on the whole cumulative amount from the crossing bill onward.
+                  const priorQuarterAggBreached = threshAggregate !== null && priorQuarterCumulative > threshAggregate;
+                  const priorTaxedBase = priorQuarterAggBreached ? priorQuarterCumulative : priorQuarterTaxable;
+                  const priorTdsLiability = roundCurrency(priorTaxedBase * (effectiveRate / 100));
+                  const totalTdsLiabilityToDate = roundCurrency(cumulativeFyNetBase * (effectiveRate / 100));
 
-                tdsAmount = roundCurrency(totalTdsLiabilityToDate - priorTdsLiability);
-                isBelowThreshold = false;
-              } else {
-                // Aggregate threshold NOT crossed. Check if single bill threshold breached in quarter
-                const singleBreachedBills = vData.quarterBills.filter((b) => threshSingle !== null && b.netBase > threshSingle);
-                if (singleBreachedBills.length > 0) {
-                  const taxableSum = singleBreachedBills.reduce((acc, b) => acc + b.netBase, 0);
-                  tdsAmount = roundCurrency(taxableSum * (effectiveRate / 100));
+                  tdsAmount = roundCurrency(totalTdsLiabilityToDate - priorTdsLiability);
                   isBelowThreshold = false;
                 } else {
-                  // Below threshold: Exempt from TDS
-                  isBelowThreshold = true;
-                  tdsRate = 0;
-                  tdsAmount = 0.0;
-                  sectionDescription += ' (Below statutory threshold - exempt)';
+                  // Aggregate threshold NOT crossed. Check if single bill threshold breached in quarter
+                  const singleBreachedBills = vData.quarterBills.filter((b) => threshSingle !== null && b.netBase > threshSingle);
+                  if (singleBreachedBills.length > 0) {
+                    const taxableSum = singleBreachedBills.reduce((acc, b) => acc + b.netBase, 0);
+                    tdsAmount = roundCurrency(taxableSum * (effectiveRate / 100));
+                    isBelowThreshold = false;
+                  } else {
+                    // Below threshold: Exempt from TDS
+                    isBelowThreshold = true;
+                    tdsRate = 0;
+                    tdsAmount = 0.0;
+                    sectionDescription += ' (Below statutory threshold - exempt)';
+                  }
                 }
               }
             }
@@ -469,6 +492,7 @@ export async function GET(req: NextRequest) {
         signedBy: signedInfo?.signedBy || null,
         signedAt: signedInfo?.signedAt || null,
         ruleStatus,
+        ruleVerification,
         ruleSourceCitation: ruleCitation,
       });
     }
@@ -618,19 +642,22 @@ export async function POST(req: NextRequest) {
 
       // Check statutory rule status in database
       const ruleRes = await db.query(
-        `SELECT id, section, status, description, source_citation
+        `SELECT id, section, sub_section, legal_regime, rate_percent, single_transaction_threshold, aggregate_annual_threshold, threshold_not_applicable, effective_from, status, description, source_citation
          FROM statutory_tds_rules
          WHERE section = $1 OR notes LIKE $2 OR description LIKE $2;`,
         [v.tds_section, `%${v.tds_section}%`]
       );
 
       const matchedRule = ruleRes.rows[0];
+      let ruleVerificationStatus: 'Platform-Verified' | 'firm-acknowledged, not platform-verified' = 'Platform-Verified';
       if (matchedRule) {
         const ackRes = await db.query(
-          'SELECT 1 FROM org_statutory_acknowledgements WHERE org_id = $1 AND rule_id = $2;',
+          'SELECT rule_version_hash, invalidated_at FROM org_statutory_acknowledgements WHERE org_id = $1 AND rule_id = $2;',
           [auth.activeOrgId, matchedRule.id]
         );
-        const isVerified = matchedRule.status === 'approved' || ackRes.rows.length > 0;
+        const currentHash = computeRuleContentHash(matchedRule);
+        const hasValidAck = ackRes.rows.length > 0 && !ackRes.rows[0].invalidated_at && ackRes.rows[0].rule_version_hash === currentHash;
+        const isVerified = matchedRule.status === 'approved' || hasValidAck;
         if (!isVerified) {
           return NextResponse.json(
             {
@@ -641,6 +668,7 @@ export async function POST(req: NextRequest) {
             { status: 400 }
           );
         }
+        ruleVerificationStatus = matchedRule.status === 'approved' ? 'Platform-Verified' : 'firm-acknowledged, not platform-verified';
       }
 
       // Check challan allocation for this deduction line
@@ -691,8 +719,8 @@ export async function POST(req: NextRequest) {
             'tds_deduction_line',
             certificateId,
             null,
-            JSON.stringify({ status: 'signed_off', signedBy, signedAt, challanId: allocRes.rows[0].challan_id }),
-            `Chartered Accountant statutory sign-off on TDS deduction line (${certificateId}) against Challan ${allocRes.rows[0].challan_no}`,
+            JSON.stringify({ status: 'signed_off', signedBy, signedAt, challanId: allocRes.rows[0].challan_id, ruleVerificationStatus }),
+            `Chartered Accountant statutory sign-off on TDS deduction line (${certificateId}) against Challan ${allocRes.rows[0].challan_no} [${ruleVerificationStatus}]`,
           ]
         );
       } catch (logErr) {
@@ -705,6 +733,7 @@ export async function POST(req: NextRequest) {
         certificateId,
         signedBy,
         signedAt,
+        ruleVerificationStatus,
       });
     }
 
@@ -779,10 +808,9 @@ export async function POST(req: NextRequest) {
 
     // ─── ACTION 4: Platform Admin Approval of Draft Statutory Rule ────────────
     if (action === 'approve_statutory_rule') {
-      const access = checkRoleAccess(auth, ['FIRM_ADMIN']);
-      if (!access.allowed) {
+      if (!auth.isPlatformAdmin) {
         return NextResponse.json(
-          { success: false, error: 'Access Denied: Global statutory rule approval requires platform admin role.' },
+          { success: false, error: 'Access Denied: Global statutory rule approval requires platform admin privileges.' },
           { status: 403 }
         );
       }
@@ -824,19 +852,47 @@ export async function POST(req: NextRequest) {
       }
       await assertTenantAccess(auth, auth.activeOrgId);
 
-      const { ruleId, notes } = bodyParsed.data;
+      const { ruleId, notes, attestationText } = bodyParsed.data;
       if (!ruleId) {
         return NextResponse.json({ success: false, error: 'ruleId is required' }, { status: 400 });
       }
+      if (!attestationText || typeof attestationText !== 'string' || attestationText.trim().length < 10) {
+        return NextResponse.json(
+          { success: false, error: 'Explicit attestation text is required to acknowledge a statutory rule (minimum 10 characters).' },
+          { status: 400 }
+        );
+      }
+
+      // Fetch rule to compute version hash
+      const ruleRes = await db.query('SELECT * FROM statutory_tds_rules WHERE id = $1', [ruleId]);
+      if (ruleRes.rows.length === 0) {
+        return NextResponse.json({ success: false, error: `Rule ${ruleId} not found.` }, { status: 404 });
+      }
+      const ruleRow = ruleRes.rows[0];
+      const versionHash = computeRuleContentHash({
+        legal_regime: ruleRow.legal_regime,
+        section: ruleRow.section,
+        sub_section: ruleRow.sub_section,
+        rate_percent: ruleRow.rate_percent,
+        single_transaction_threshold: ruleRow.single_transaction_threshold,
+        aggregate_annual_threshold: ruleRow.aggregate_annual_threshold,
+        threshold_not_applicable: ruleRow.threshold_not_applicable,
+        effective_from: ruleRow.effective_from,
+      });
 
       const ackId = `ack-${auth.activeOrgId}-${ruleId}`;
       const ackRes = await db.query(
-        `INSERT INTO org_statutory_acknowledgements (id, org_id, rule_id, acknowledged_by, acknowledged_at, notes)
-         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5)
+        `INSERT INTO org_statutory_acknowledgements (id, org_id, rule_id, acknowledged_by, acknowledged_at, notes, rule_version_hash, attestation_text, invalidated_at)
+         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5, $6, $7, NULL)
          ON CONFLICT (org_id, rule_id)
-         DO UPDATE SET acknowledged_by = EXCLUDED.acknowledged_by, acknowledged_at = CURRENT_TIMESTAMP, notes = EXCLUDED.notes
-         RETURNING id, org_id, rule_id, acknowledged_by, acknowledged_at, notes;`,
-        [ackId, auth.activeOrgId, ruleId, auth.userId, notes || null]
+         DO UPDATE SET acknowledged_by = EXCLUDED.acknowledged_by,
+                       acknowledged_at = CURRENT_TIMESTAMP,
+                       notes = EXCLUDED.notes,
+                       rule_version_hash = EXCLUDED.rule_version_hash,
+                       attestation_text = EXCLUDED.attestation_text,
+                       invalidated_at = NULL
+         RETURNING id, org_id, rule_id, acknowledged_by, acknowledged_at, notes, rule_version_hash, attestation_text;`,
+        [ackId, auth.activeOrgId, ruleId, auth.userId, notes || null, versionHash, attestationText.trim()]
       );
 
       return NextResponse.json({

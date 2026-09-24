@@ -14,6 +14,7 @@ export interface AuthContext {
   userName: string;
   userEmail: string;
   role: UserRole | LegacyRole;
+  isPlatformAdmin?: boolean;
   activeOrgId: string;
   activeOrgName?: string;
   materialityThreshold?: number;
@@ -265,11 +266,33 @@ export async function getAuthContext(req?: NextRequest): Promise<AuthContext> {
     }
   }
 
+  // 6. Check platform admin privileges (database flag + env allowlist)
+  let isPlatformAdmin = false;
+  if (effectiveUserId) {
+    const adminCheck = await db.query(
+      `SELECT is_platform_admin, email FROM users WHERE id = $1;`,
+      [effectiveUserId]
+    );
+    if (adminCheck.rows.length > 0) {
+      isPlatformAdmin = Boolean(adminCheck.rows[0].is_platform_admin);
+      if (!effectiveUserEmail) {
+        effectiveUserEmail = adminCheck.rows[0].email;
+      }
+    }
+  }
+  if (!isPlatformAdmin && effectiveUserEmail && process.env.PLATFORM_ADMIN_EMAILS) {
+    const allowlist = process.env.PLATFORM_ADMIN_EMAILS.split(',').map((e) => e.trim().toLowerCase());
+    if (allowlist.includes(effectiveUserEmail.toLowerCase())) {
+      isPlatformAdmin = true;
+    }
+  }
+
   return {
     userId: effectiveUserId || 'user-lead-ca',
     userName: effectiveUserName,
     userEmail: effectiveUserEmail,
     role: effectiveRole,
+    isPlatformAdmin,
     activeOrgId: targetOrgId,
     activeOrgName: org.name,
     materialityThreshold: Number(org.materiality_threshold || 50000.00),
