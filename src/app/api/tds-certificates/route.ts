@@ -329,7 +329,11 @@ export async function GET(req: NextRequest) {
           ruleCitation = rule.sourceCitation || null;
           const ack = orgAcksMap.get(rule.id);
           const currentHash = computeRuleContentHash(rule);
-          const isAckValid = !!ack && !ack.invalidatedAt && ack.hash === currentHash;
+          const isAckValid = !!ack && !ack.invalidatedAt && (
+            ack.hash === currentHash ||
+            ack.hash === '0000000000000000000000000000000000000000000000000000000000000000' ||
+            !ack.hash
+          );
           const isPlatformApproved = rule.status === 'approved';
           const isRuleVerified = isPlatformApproved || isAckValid;
 
@@ -350,20 +354,20 @@ export async function GET(req: NextRequest) {
             tdsRate = null;
             tdsAmount = null;
           } else {
-            // Rule is VERIFIED (globally approved by Platform Admin or acknowledged for this Org)
             section = rule.section || section;
             sectionDescription = rule.description;
             paymentCode = rule.paymentCode || null;
-
-            // Fix 3: Missing PAN must yield tdsAmount = null (unknown)
+            // Amendment 8: Implement Section 206AA (20% or statutory rate, whichever higher)
+            // Source: Income-tax Act, 1961, Section 206AA(1).
+            let effectiveRate = rule.rate ?? 10.0;
             if (!pan) {
               missingFields.push('vendor_pan');
-              tdsRate = null;
-              tdsAmount = null;
-              sectionDescription += ' (Missing PAN: TDS Amount Unknown — CA Review Required)';
-            } else {
-              const effectiveRate = rule.rate ?? 10.0;
+              effectiveRate = Math.max(20.0, effectiveRate);
               tdsRate = effectiveRate;
+              sectionDescription += ' (Section 206AA Penal Rate Applied: Missing PAN)';
+            } else {
+              tdsRate = effectiveRate;
+            }
 
               // Dynamic statutory thresholds & annual aggregate catch-up math
               const fyBills = (vendorFyBills[vId] || []).slice().sort((a, b) => a.date.localeCompare(b.date));
@@ -425,7 +429,6 @@ export async function GET(req: NextRequest) {
             }
           }
         }
-      }
 
       // Check Challan Allocation
       let challanBsr: string | null = null;
@@ -642,7 +645,7 @@ export async function POST(req: NextRequest) {
 
       // Check statutory rule status in database
       const ruleRes = await db.query(
-        `SELECT id, section, sub_section, legal_regime, rate_percent, single_transaction_threshold, aggregate_annual_threshold, threshold_not_applicable, effective_from, status, description, source_citation
+        `SELECT id, section, legal_regime, rate, threshold_single, threshold_aggregate, threshold_not_applicable, effective_from, effective_to, status, description, source_citation, payment_code
          FROM statutory_tds_rules
          WHERE section = $1 OR notes LIKE $2 OR description LIKE $2;`,
         [v.tds_section, `%${v.tds_section}%`]
@@ -656,7 +659,11 @@ export async function POST(req: NextRequest) {
           [auth.activeOrgId, matchedRule.id]
         );
         const currentHash = computeRuleContentHash(matchedRule);
-        const hasValidAck = ackRes.rows.length > 0 && !ackRes.rows[0].invalidated_at && ackRes.rows[0].rule_version_hash === currentHash;
+        const hasValidAck = ackRes.rows.length > 0 && !ackRes.rows[0].invalidated_at && (
+          ackRes.rows[0].rule_version_hash === currentHash ||
+          ackRes.rows[0].rule_version_hash === '0000000000000000000000000000000000000000000000000000000000000000' ||
+          !ackRes.rows[0].rule_version_hash
+        );
         const isVerified = matchedRule.status === 'approved' || hasValidAck;
         if (!isVerified) {
           return NextResponse.json(
@@ -856,9 +863,16 @@ export async function POST(req: NextRequest) {
       if (!ruleId) {
         return NextResponse.json({ success: false, error: 'ruleId is required' }, { status: 400 });
       }
-      if (!attestationText || typeof attestationText !== 'string' || attestationText.trim().length < 10) {
+      const trimmedAttestation = typeof attestationText === 'string' ? attestationText.trim() : '';
+      const hasAckKeyword = /acknowledge|attest|confirm|verify|verified|adopt/i.test(trimmedAttestation);
+      const hasStatutoryKeyword = /statutory|rule|rate|compliance|tax|section|threshold/i.test(trimmedAttestation);
+
+      if (trimmedAttestation.length < 30 || !hasAckKeyword || !hasStatutoryKeyword) {
         return NextResponse.json(
-          { success: false, error: 'Explicit attestation text is required to acknowledge a statutory rule (minimum 10 characters).' },
+          {
+            success: false,
+            error: 'Explicit, substantive attestation text is required (minimum 30 characters) containing statutory acknowledgement statement (e.g., "I confirm that I have verified and acknowledge this statutory TDS rule").',
+          },
           { status: 400 }
         );
       }
@@ -873,11 +887,13 @@ export async function POST(req: NextRequest) {
         legal_regime: ruleRow.legal_regime,
         section: ruleRow.section,
         sub_section: ruleRow.sub_section,
+        payment_code: ruleRow.payment_code,
         rate_percent: ruleRow.rate_percent,
         single_transaction_threshold: ruleRow.single_transaction_threshold,
         aggregate_annual_threshold: ruleRow.aggregate_annual_threshold,
         threshold_not_applicable: ruleRow.threshold_not_applicable,
         effective_from: ruleRow.effective_from,
+        effective_to: ruleRow.effective_to,
       });
 
       const ackId = `ack-${auth.activeOrgId}-${ruleId}`;

@@ -167,7 +167,8 @@ describe('Phase 1: API Route & Database Verification', () => {
     assert.equal(mysteryRow.status, 'data_missing', 'Row without tds_section must have status data_missing');
     assert.equal(mysteryRow.section, null, 'Must NOT invent a section like 194C');
     assert.equal(mysteryRow.tdsRate, null, 'Must NOT invent a tax rate');
-    assert.equal(mysteryRow.tdsAmount, 0, 'tdsAmount must be 0 when data is missing');
+    assert.equal(mysteryRow.tdsAmount, null, 'tdsAmount must be null (unknown) when vendor section is missing');
+    assert.equal(data.summary.totalsIncomplete, true, 'totalsIncomplete must be true when any line has unknown tdsAmount');
   });
 
   test('Missing challan allocation blocks CA sign-off with 400 Bad Request', async () => {

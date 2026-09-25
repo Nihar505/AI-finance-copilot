@@ -102,9 +102,9 @@ describe('Phase 1c: Audit Integrity & Statutory Rule Non-Fabrication', () => {
       async () => {
         await db.query(
           `INSERT INTO statutory_tds_rules (
-             id, legal_regime, section, description, effective_from, rate, status, reviewed_by, reviewed_at
+             id, legal_regime, section, description, effective_from, rate, threshold_not_applicable, status, reviewed_by, reviewed_at
            ) VALUES (
-             $1, 'IT_ACT_1961', '194C', 'FK Test', '2024-04-01', 2.0, 'approved', 'CA Priya Sharma, FCA (Emp #CA-88219)', CURRENT_TIMESTAMP
+             $1, 'IT_ACT_1961', '194C', 'FK Test', '2024-04-01', 2.0, TRUE, 'approved', 'CA Priya Sharma, FCA (Emp #CA-88219)', CURRENT_TIMESTAMP
            );`,
           [idFk]
         );
@@ -144,11 +144,11 @@ describe('Phase 1c: Approval Scope & Cross-Tenant Security', () => {
       [ORG_A]
     );
 
-    // Platform Admin (FIRM_ADMIN)
+    // Platform Admin (is_platform_admin = TRUE)
     await db.query(
-      `INSERT INTO users (id, org_id, name, email, role, password_hash)
-       VALUES ('user-p1c-platform-admin', $1, 'System Platform Admin', 'admin@platform.test', 'FIRM_ADMIN', 'hash')
-       ON CONFLICT (id) DO NOTHING;`,
+      `INSERT INTO users (id, org_id, name, email, role, password_hash, is_platform_admin)
+       VALUES ('user-p1c-platform-admin', $1, 'System Platform Admin', 'admin@platform.test', 'FIRM_ADMIN', 'hash', TRUE)
+       ON CONFLICT (id) DO UPDATE SET is_platform_admin = TRUE;`,
       [ORG_A]
     );
     await db.query(
@@ -245,6 +245,7 @@ describe('Phase 1c: Approval Scope & Cross-Tenant Security', () => {
         action: 'acknowledge_statutory_rule',
         ruleId: 'rule-1961-194c',
         notes: 'Acknowledged and adopted for FY 2024-25 by Org A CA.',
+        attestationText: 'I confirm that I have verified and acknowledge this statutory TDS rule for this organization.',
       }),
     });
 
@@ -267,6 +268,7 @@ describe('Phase 1c: Approval Scope & Cross-Tenant Security', () => {
         action: 'acknowledge_statutory_rule',
         ruleId: 'rule-1961-194c',
         notes: 'Cross-tenant illegal acknowledgement attempt.',
+        attestationText: 'I confirm that I have verified and acknowledge this statutory TDS rule for this organization.',
       }),
     });
 
@@ -458,12 +460,12 @@ describe('Phase 1c: Aggregate-Threshold Cumulative Catch-Up Math', () => {
 });
 
 describe('Phase 1c: Section 393 Primary-Source Citations & Unconfirmed Rows Listing', () => {
-  test('Section 393 draft rules cite primary source URL and exact table serials', async () => {
+  test('Section 393 draft rules have NULL citation when deep link cannot be retrieved from primary source', async () => {
     const db = await getDb();
     const res = await db.query(
       `SELECT id, section, payment_code, source_citation, status, reviewed_by, reviewed_at
        FROM statutory_tds_rules
-       WHERE legal_regime = 'IT_ACT_2025';`
+       WHERE legal_regime = 'IT_ACT_2025' AND id LIKE 'rule-2025-%';`
     );
 
     assert.ok(res.rows.length >= 6, 'Must contain at least 6 Section 393 framework rules');
@@ -472,16 +474,8 @@ describe('Phase 1c: Section 393 Primary-Source Citations & Unconfirmed Rows List
       assert.equal(rule.status, 'draft', `Rule ${rule.id} must be in draft status`);
       assert.equal(rule.reviewed_by, null, `Rule ${rule.id} reviewed_by must be NULL`);
       assert.equal(rule.reviewed_at, null, `Rule ${rule.id} reviewed_at must be NULL`);
-
-      assert.ok(
-        rule.source_citation,
-        `Rule ${rule.id} must have a primary source citation`
-      );
-      assert.match(
-        rule.source_citation,
-        /https:\/\/(incometaxindia\.gov\.in|egazette\.gov\.in|incometax\.gov\.in)/,
-        `Rule ${rule.id} citation must include primary official government portal URL`
-      );
+      // Per Pre-step 2.0 Amendment 1: unretrieved deep links are set to NULL, preventing fabricated anchors/paths
+      assert.equal(rule.source_citation, null, `Rule ${rule.id} source_citation must be NULL when deep link cannot be verified`);
     }
   });
 });

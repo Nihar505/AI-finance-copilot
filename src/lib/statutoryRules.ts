@@ -354,6 +354,8 @@ export function computeRuleContentHash(rule: {
   legal_regime?: string | null;
   section?: string | null;
   sub_section?: string | null;
+  paymentCode?: string | null;
+  payment_code?: string | null;
   rate?: number | string | null;
   rate_percent?: number | string | null;
   thresholdSingle?: number | string | null;
@@ -364,10 +366,13 @@ export function computeRuleContentHash(rule: {
   threshold_not_applicable?: boolean | null;
   effectiveFrom?: string | Date | null;
   effective_from?: string | Date | null;
+  effectiveTo?: string | Date | null;
+  effective_to?: string | Date | null;
 }): string {
   const regime = (rule.regime || rule.legal_regime || '').trim().toUpperCase();
   const sec = (rule.section || '').trim().toUpperCase() || 'NULL';
   const subSec = (rule.sub_section || '').trim().toUpperCase() || 'NULL';
+  const payCode = (rule.paymentCode || rule.payment_code || '').trim().toUpperCase() || 'NULL';
 
   const rawRate = rule.rate !== undefined ? rule.rate : rule.rate_percent;
   const canonicalRate = rawRate !== null && rawRate !== undefined && rawRate !== ''
@@ -393,7 +398,14 @@ export function computeRuleContentHash(rule: {
     canonicalEff = (rawEff instanceof Date ? rawEff.toISOString() : String(rawEff)).slice(0, 10);
   }
 
-  const canonicalString = `${regime}|${sec}|${subSec}|${canonicalRate}|${canonicalSingle}|${canonicalAgg}|${canonicalThreshNA}|${canonicalEff}`;
+  const rawEffTo = rule.effectiveTo || rule.effective_to;
+  let canonicalEffTo = 'NULL';
+  if (rawEffTo) {
+    canonicalEffTo = (rawEffTo instanceof Date ? rawEffTo.toISOString() : String(rawEffTo)).slice(0, 10);
+  }
+
+  const canonicalString = `${regime}|${sec}|${subSec}|${payCode}|${canonicalRate}|${canonicalSingle}|${canonicalAgg}|${canonicalThreshNA}|${canonicalEff}|${canonicalEffTo}`;
   return crypto.createHash('sha256').update(canonicalString).digest('hex');
 }
+
 

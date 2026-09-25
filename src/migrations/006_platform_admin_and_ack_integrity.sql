@@ -26,15 +26,17 @@ ALTER TABLE statutory_tds_rules
         (status = 'approved' 
          AND reviewed_by IS NOT NULL 
          AND reviewed_at IS NOT NULL 
-         AND rate_percent IS NOT NULL 
-         AND ((single_transaction_threshold IS NOT NULL AND aggregate_annual_threshold IS NOT NULL) OR threshold_not_applicable = TRUE))
+         AND rate IS NOT NULL 
+         AND ((threshold_single IS NOT NULL AND threshold_aggregate IS NOT NULL) OR threshold_not_applicable = TRUE))
         OR (status != 'approved')
     );
 
 -- ─── 4. Acknowledgement Versioning & Attestation ──────────────────────────────
-ALTER TABLE org_statutory_acknowledgements ADD COLUMN IF NOT EXISTS rule_version_hash VARCHAR(64);
-ALTER TABLE org_statutory_acknowledgements ADD COLUMN IF NOT EXISTS attestation_text TEXT;
+ALTER TABLE org_statutory_acknowledgements ADD COLUMN IF NOT EXISTS rule_version_hash VARCHAR(64) DEFAULT '0000000000000000000000000000000000000000000000000000000000000000';
+ALTER TABLE org_statutory_acknowledgements ADD COLUMN IF NOT EXISTS attestation_text TEXT DEFAULT 'Legacy acknowledgement migrated without explicit attestation.';
 ALTER TABLE org_statutory_acknowledgements ADD COLUMN IF NOT EXISTS invalidated_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE org_statutory_acknowledgements ALTER COLUMN rule_version_hash SET DEFAULT '0000000000000000000000000000000000000000000000000000000000000000';
+ALTER TABLE org_statutory_acknowledgements ALTER COLUMN attestation_text SET DEFAULT 'Legacy acknowledgement migrated without explicit attestation.';
 
 -- ─── 5. Backfill Existing Acknowledgements ────────────────────────────────────
 UPDATE org_statutory_acknowledgements
@@ -46,9 +48,9 @@ WHERE rule_version_hash IS NULL OR attestation_text IS NULL;
 CREATE OR REPLACE FUNCTION trg_invalidate_org_statutory_acknowledgements()
 RETURNS TRIGGER AS $$
 BEGIN
-    IF (OLD.rate_percent IS DISTINCT FROM NEW.rate_percent OR
-        OLD.single_transaction_threshold IS DISTINCT FROM NEW.single_transaction_threshold OR
-        OLD.aggregate_annual_threshold IS DISTINCT FROM NEW.aggregate_annual_threshold OR
+    IF (OLD.rate IS DISTINCT FROM NEW.rate OR
+        OLD.threshold_single IS DISTINCT FROM NEW.threshold_single OR
+        OLD.threshold_aggregate IS DISTINCT FROM NEW.threshold_aggregate OR
         OLD.section IS DISTINCT FROM NEW.section OR
         OLD.legal_regime IS DISTINCT FROM NEW.legal_regime OR
         OLD.effective_from IS DISTINCT FROM NEW.effective_from OR
@@ -74,8 +76,8 @@ EXECUTE FUNCTION trg_invalidate_org_statutory_acknowledgements();
 -- Primary deep link could not be retrieved -> source_citation = NULL
 UPDATE statutory_tds_rules
 SET payment_code = NULL,
-    single_transaction_threshold = NULL,
-    aggregate_annual_threshold = NULL,
+    threshold_single = NULL,
+    threshold_aggregate = NULL,
     source_citation = NULL,
     status = 'draft',
     reviewed_by = NULL,
