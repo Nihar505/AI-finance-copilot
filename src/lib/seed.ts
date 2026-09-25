@@ -249,6 +249,7 @@ export async function seedRealisticSandboxData() {
     DELETE FROM tds_signoffs WHERE org_id IN ('${ORG_ID}', '${ORG_ZENITH_ID}');
     DELETE FROM tds_challan_allocations WHERE org_id IN ('${ORG_ID}', '${ORG_ZENITH_ID}');
     DELETE FROM tds_challans WHERE org_id IN ('${ORG_ID}', '${ORG_ZENITH_ID}');
+    DELETE FROM gstr2b_entries WHERE org_id IN ('${ORG_ID}', '${ORG_ZENITH_ID}');
   `);
 
   // Create document batches
@@ -387,6 +388,137 @@ export async function seedRealisticSandboxData() {
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (id) DO NOTHING;`,
       [a.id, ORG_ID, a.challanId, a.lineId, a.amount]
+    );
+  }
+
+  // Demo GSTR-2B Portal Entries (October 2024, source: 'demo')
+  // Aligned with bills to produce exactly:
+  // - AWS (AWS-OCT-9912): matched (₹42,500.00, tax ₹6,483.05)
+  // - Google (GCP-IND-4410): matched (₹18,400.00, tax ₹2,806.78)
+  // - WeWork (WW-BLR-0982): mismatched (portal ₹116,000 vs books ₹115,000, ₹1,000 gap)
+  // - Airtel (AIRTEL-LL-99201): matched (₹12,800.00, tax ₹1,952.54)
+  // - Razorpay (RZP-STMT-OCT24): matched (₹6,450.00, tax ₹983.90)
+  // - Mystery Co (MYS-INV-OCT-001): missing_books (portal invoice not in books)
+  // Books also contain:
+  // - Dell (DELL-CORP-771): data_missing (vendor tax_id is null)
+  // - Slack (SLACK-INV-5510): not_expected_in_2b (foreign vendor, tax_id 9920USA998811AA, NEEDS_CA_REVIEW)
+  const demoGSTR2B = [
+    {
+      id: `gstr2b-${ORG_ID}-2024-10-aws`,
+      period: '2024-10',
+      supplier_gstin: '27AABCA1234D1ZP',
+      supplier_name: 'Amazon Web Services India Pvt Ltd',
+      invoice_number: 'AWS-OCT-9912',
+      invoice_date: '2024-10-01',
+      invoice_value: 42500.00,
+      taxable_value: 36016.95,
+      igst: 0.00,
+      cgst: 3241.52,
+      sgst: 3241.53,
+      itc_available: true,
+    },
+    {
+      id: `gstr2b-${ORG_ID}-2024-10-google`,
+      period: '2024-10',
+      supplier_gstin: '27AABCG5678M1ZQ',
+      supplier_name: 'Google Cloud India Pvt Ltd',
+      invoice_number: 'GCP-IND-4410',
+      invoice_date: '2024-10-03',
+      invoice_value: 18400.00,
+      taxable_value: 15593.22,
+      igst: 0.00,
+      cgst: 1403.39,
+      sgst: 1403.39,
+      itc_available: true,
+    },
+    {
+      id: `gstr2b-${ORG_ID}-2024-10-wework`,
+      period: '2024-10',
+      supplier_gstin: '27AACCW9988L1ZT',
+      supplier_name: 'WeWork India Management Pvt Ltd',
+      invoice_number: 'WW-BLR-0982',
+      invoice_date: '2024-10-05',
+      // Deliberate ₹1,000 mismatch (portal ₹116,000 vs books ₹115,000)
+      invoice_value: 116000.00,
+      taxable_value: 98305.08,
+      igst: 0.00,
+      cgst: 8847.46,
+      sgst: 8847.46,
+      itc_available: true,
+    },
+    {
+      id: `gstr2b-${ORG_ID}-2024-10-airtel`,
+      period: '2024-10',
+      supplier_gstin: '27AAACB0011F1ZX',
+      supplier_name: 'Bharti Airtel Limited',
+      invoice_number: 'AIRTEL-LL-99201',
+      invoice_date: '2024-10-17',
+      invoice_value: 12800.00,
+      taxable_value: 10847.46,
+      igst: 0.00,
+      cgst: 976.27,
+      sgst: 976.27,
+      itc_available: true,
+    },
+    {
+      id: `gstr2b-${ORG_ID}-2024-10-razorpay`,
+      period: '2024-10',
+      supplier_gstin: '27AABCR4433P1ZR',
+      supplier_name: 'Razorpay Software Pvt Ltd',
+      invoice_number: 'RZP-STMT-OCT24',
+      invoice_date: '2024-10-24',
+      invoice_value: 6450.00,
+      taxable_value: 5466.10,
+      igst: 0.00,
+      cgst: 491.95,
+      sgst: 491.95,
+      itc_available: true,
+    },
+    {
+      id: `gstr2b-${ORG_ID}-2024-10-mystery`,
+      period: '2024-10',
+      supplier_gstin: '29AABCM8811R1ZZ',
+      supplier_name: 'Mystery Vendor Co. Ltd',
+      invoice_number: 'MYS-INV-OCT-001',
+      invoice_date: '2024-10-15',
+      invoice_value: 25000.00,
+      taxable_value: 21186.44,
+      igst: 0.00,
+      cgst: 1906.78,
+      sgst: 1906.78,
+      itc_available: true,
+    },
+  ];
+
+  for (const g of demoGSTR2B) {
+    await db.query(
+      `INSERT INTO gstr2b_entries
+         (id, org_id, period, supplier_gstin, supplier_name, invoice_number,
+          invoice_date, invoice_value, taxable_value, igst, cgst, sgst, itc_available, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'demo')
+       ON CONFLICT (org_id, period, supplier_gstin, invoice_number) DO UPDATE SET
+         invoice_value = EXCLUDED.invoice_value,
+         taxable_value = EXCLUDED.taxable_value,
+         igst = EXCLUDED.igst,
+         cgst = EXCLUDED.cgst,
+         sgst = EXCLUDED.sgst,
+         itc_available = EXCLUDED.itc_available,
+         source = EXCLUDED.source;`,
+      [
+        g.id,
+        ORG_ID,
+        g.period,
+        g.supplier_gstin,
+        g.supplier_name,
+        g.invoice_number,
+        g.invoice_date,
+        g.invoice_value,
+        g.taxable_value,
+        g.igst,
+        g.cgst,
+        g.sgst,
+        g.itc_available,
+      ]
     );
   }
 

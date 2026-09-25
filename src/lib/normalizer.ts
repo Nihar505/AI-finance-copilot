@@ -1,5 +1,5 @@
 import Papa from 'papaparse';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import { isValidDate } from './security';
 
 export interface NormalizedTransaction {
@@ -123,14 +123,49 @@ export function extractCounterparty(description: string): string {
   return cleaned.substring(0, 60).trim();
 }
 
+async function parseExcelRows(fileBuffer: Buffer | string): Promise<Record<string, any>[]> {
+  const workbook = new ExcelJS.Workbook();
+  const buffer = typeof fileBuffer === 'string' ? Buffer.from(fileBuffer, 'base64') : fileBuffer;
+  await workbook.xlsx.load(buffer as any);
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) return [];
+
+  const headers: string[] = [];
+  const rows: Record<string, any>[] = [];
+
+  worksheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) {
+      row.eachCell((cell, colNumber) => {
+        headers[colNumber] = String(cell.value || '').trim();
+      });
+    } else {
+      const rowObj: Record<string, any> = {};
+      row.eachCell((cell, colNumber) => {
+        const header = headers[colNumber];
+        if (header) {
+          let val = cell.value;
+          if (val && typeof val === 'object') {
+            if ('result' in val) val = (val as any).result;
+            else if ('text' in val) val = (val as any).text;
+          }
+          rowObj[header] = val !== undefined && val !== null ? String(val) : '';
+        }
+      });
+      if (Object.keys(rowObj).length > 0) {
+        rows.push(rowObj);
+      }
+    }
+  });
+
+  return rows;
+}
+
 // Parse Bank Statement CSV/Excel text or buffer
-export function parseBankStatement(fileBuffer: Buffer | string, filename: string): NormalizedTransaction[] {
+export async function parseBankStatement(fileBuffer: Buffer | string, filename: string): Promise<NormalizedTransaction[]> {
   let rows: any[] = [];
 
   if (filename.endsWith('.xlsx') || filename.endsWith('.xls')) {
-    const workbook = XLSX.read(fileBuffer, { type: typeof fileBuffer === 'string' ? 'string' : 'buffer' });
-    const sheetName = workbook.SheetNames[0];
-    rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' });
+    rows = await parseExcelRows(fileBuffer);
   } else {
     const text = typeof fileBuffer === 'string' ? fileBuffer : fileBuffer.toString('utf8');
     const result = Papa.parse(text, { header: true, skipEmptyLines: true });
@@ -202,13 +237,11 @@ export function parseBankStatement(fileBuffer: Buffer | string, filename: string
 }
 
 // Parse Sales Invoices CSV/Excel
-export function parseSalesInvoices(fileBuffer: Buffer | string, filename: string): NormalizedInvoice[] {
+export async function parseSalesInvoices(fileBuffer: Buffer | string, filename: string): Promise<NormalizedInvoice[]> {
   let rows: any[] = [];
 
   if (filename.endsWith('.xlsx') || filename.endsWith('.xls')) {
-    const workbook = XLSX.read(fileBuffer, { type: typeof fileBuffer === 'string' ? 'string' : 'buffer' });
-    const sheetName = workbook.SheetNames[0];
-    rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' });
+    rows = await parseExcelRows(fileBuffer);
   } else {
     const text = typeof fileBuffer === 'string' ? fileBuffer : fileBuffer.toString('utf8');
     const result = Papa.parse(text, { header: true, skipEmptyLines: true });
@@ -259,13 +292,11 @@ export function parseSalesInvoices(fileBuffer: Buffer | string, filename: string
 }
 
 // Parse Vendor Bills CSV/Excel
-export function parseVendorBills(fileBuffer: Buffer | string, filename: string): NormalizedBill[] {
+export async function parseVendorBills(fileBuffer: Buffer | string, filename: string): Promise<NormalizedBill[]> {
   let rows: any[] = [];
 
   if (filename.endsWith('.xlsx') || filename.endsWith('.xls')) {
-    const workbook = XLSX.read(fileBuffer, { type: typeof fileBuffer === 'string' ? 'string' : 'buffer' });
-    const sheetName = workbook.SheetNames[0];
-    rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' });
+    rows = await parseExcelRows(fileBuffer);
   } else {
     const text = typeof fileBuffer === 'string' ? fileBuffer : fileBuffer.toString('utf8');
     const result = Papa.parse(text, { header: true, skipEmptyLines: true });

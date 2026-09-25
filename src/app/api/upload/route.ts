@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
     const docId = `doc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
 
     if (fileType === 'bank_statement') {
-      const txns = parseBankStatement(buffer, file.name);
+      const txns = await parseBankStatement(buffer, file.name);
       if (txns.length === 0) {
         return NextResponse.json({ success: false, error: 'No valid transactions found in statement file' }, { status: 400 });
       }
@@ -142,7 +142,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (fileType === 'sales_invoices') {
-      const invoices = parseSalesInvoices(buffer, file.name);
+      const invoices = await parseSalesInvoices(buffer, file.name);
       if (invoices.length === 0) {
         return NextResponse.json({ success: false, error: 'No valid invoices found in file' }, { status: 400 });
       }
@@ -207,7 +207,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (fileType === 'vendor_bills') {
-      const bills = parseVendorBills(buffer, file.name);
+      const bills = await parseVendorBills(buffer, file.name);
       if (bills.length === 0) {
         return NextResponse.json({ success: false, error: 'No valid vendor bills found in file' }, { status: 400 });
       }
