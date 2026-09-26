@@ -91,13 +91,24 @@ export async function seedBaseData() {
   );
 
   // 2. Users & Multi-Tenant Roles
-  // Hash all passwords using authentic PBKDF2-SHA512 mechanism with no backdoor string prefixes
-  const leadCAHash = hashPassword('ApexCA@2026!');
-  const ownerHash = hashPassword('ZenithOwner@2026!');
-  const adminHash = hashPassword('AdminSecure@2026!');
-  const demoCAHash = hashPassword('DemoCA@12345');
-  const demoOwnerHash = hashPassword('DemoOwner@12345');
-  const demoAdminHash = hashPassword('DemoAdmin@12345');
+  // Read passwords from environment variables.
+  // In production, require explicit env vars or generate random secure strings — never hardcode credentials.
+  const isProd = process.env.NODE_ENV === 'production';
+  const getSeedPassword = (envKey: string, devDefault: string): string => {
+    if (process.env[envKey]) return process.env[envKey]!;
+    if (process.env.DEMO_USER_PASSWORD) return process.env.DEMO_USER_PASSWORD;
+    if (isProd) {
+      return crypto.randomBytes(32).toString('hex');
+    }
+    return devDefault;
+  };
+
+  const leadCAHash = hashPassword(getSeedPassword('SEED_CA_PASSWORD', 'ApexCA@2026!'));
+  const ownerHash = hashPassword(getSeedPassword('SEED_OWNER_PASSWORD', 'ZenithOwner@2026!'));
+  const adminHash = hashPassword(getSeedPassword('SEED_ADMIN_PASSWORD', 'AdminSecure@2026!'));
+  const demoCAHash = hashPassword(getSeedPassword('SEED_DEMO_CA_PASSWORD', 'DemoCA@12345'));
+  const demoOwnerHash = hashPassword(getSeedPassword('SEED_DEMO_OWNER_PASSWORD', 'DemoOwner@12345'));
+  const demoAdminHash = hashPassword(getSeedPassword('SEED_DEMO_ADMIN_PASSWORD', 'DemoAdmin@12345'));
 
   await db.query(
     `INSERT INTO users (id, org_id, name, email, role, password_hash)

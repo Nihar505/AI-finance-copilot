@@ -142,3 +142,29 @@ export async function safeParseJson<T = any>(req: Request, maxBytes: number = 1_
     return { success: false, error: `Malformed JSON in request body: ${err.message}` };
   }
 }
+
+/**
+ * Sanitizes bank transaction narrations before passing to LLM / Gemini prompt.
+ * 1. Strips ASCII control characters ([\x00-\x1F\x7F]) to prevent prompt evasion
+ * 2. Caps maximum length to prevent token exhaustion / prompt injection attacks
+ */
+export function sanitizeNarrationForAi(narration: string | null | undefined, maxChars = 500): string {
+  if (!narration || typeof narration !== 'string') return '';
+  // Strip control characters (including null bytes, tabs, newlines, bells)
+  const cleaned = narration.replace(/[\x00-\x1F\x7F]/g, ' ').replace(/\s+/g, ' ').trim();
+  // Cap length
+  if (cleaned.length > maxChars) {
+    return cleaned.substring(0, maxChars) + '...';
+  }
+  return cleaned;
+}
+
+/**
+ * Delimits untrusted bank statement narration inside explicit XML boundary tags
+ * to clearly separate user-provided financial data from system prompt instructions.
+ */
+export function wrapUntrustedNarration(narration: string | null | undefined, maxChars = 500): string {
+  const safe = sanitizeNarrationForAi(narration, maxChars);
+  return `<untrusted_bank_narration>${safe}</untrusted_bank_narration>`;
+}
+

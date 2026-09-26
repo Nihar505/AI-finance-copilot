@@ -193,11 +193,6 @@ export async function getAuthContext(req?: NextRequest): Promise<AuthContext> {
 
   const verifiedSession = token ? verifySessionToken(token) : null;
 
-  // In production, unauthenticated requests are strictly prohibited
-  if (process.env.NODE_ENV === 'production' && !verifiedSession) {
-    throw new Error('401 Unauthorized: Authentication required.');
-  }
-
   // 2. Resolve Role, User and Requested Org
   let effectiveRole: UserRole;
   let effectiveUserId: string;
@@ -217,7 +212,19 @@ export async function getAuthContext(req?: NextRequest): Promise<AuthContext> {
       requestedOrgId = req?.headers.get('x-org-id') || req?.nextUrl?.searchParams?.get('orgId') || verifiedSession.orgId;
     }
   } else {
-    // Development / test runner fallback
+    // Insecure dev auth fallback is strictly default-deny.
+    // Only permitted if explicitly enabled via ALLOW_INSECURE_DEV_AUTH=true in non-production environments.
+    const allowInsecureDevAuth =
+      process.env.NODE_ENV !== 'production' &&
+      process.env.ALLOW_INSECURE_DEV_AUTH === 'true';
+
+    if (!allowInsecureDevAuth) {
+      throw new Error(
+        '401 Unauthorized: Authentication required. Insecure dev auth fallback is disabled (requires ALLOW_INSECURE_DEV_AUTH=true in non-production).'
+      );
+    }
+
+    // Development / test runner fallback (explicitly enabled via ALLOW_INSECURE_DEV_AUTH=true)
     const rawRole = req?.headers.get('x-user-role');
     effectiveRole = rawRole ? normalizeRole(rawRole) : 'CA';
     effectiveUserId = req?.headers.get('x-user-id') || 'user-lead-ca';

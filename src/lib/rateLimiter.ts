@@ -1,6 +1,13 @@
 /**
- * In-memory sliding-window rate limiter for sensitive API endpoints.
+ * In-memory sliding-window token bucket rate limiter for sensitive API endpoints.
  * Protects against brute-force password guessing, DoS attacks, and LLM quota draining.
+ *
+ * ARCHITECTURAL NOTICE / LIMITATION:
+ * This rate limiter maintains state in local process memory (Map<string, Map<string, RateLimitEntry>>).
+ * Consequently, rate limits are PER-INSTANCE ONLY. In horizontally scaled or multi-container
+ * production deployments (e.g. serverless functions, Kubernetes replicas), rate limit state is
+ * not shared across instances. For distributed multi-instance deployments, integrate a shared
+ * centralized cache backend such as Redis (Upstash / Valkey / Redis Cluster).
  */
 
 interface RateLimitEntry {

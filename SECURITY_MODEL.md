@@ -110,3 +110,14 @@ In `src/lib/security.ts`:
   - `sameSite: 'lax'` (Provides CSRF protection for cross-site navigations)
   - `path: '/'`
   - `maxAge: 86400` (Strict 24-hour expiration)
+
+---
+
+## 6. Rate Limiting Architecture & Horizontal Scaling Limitation
+
+* **Engine**: In-memory token bucket sliding window (`src/lib/rateLimiter.ts`).
+* **Per-Instance Scope**:
+  - Rate limit counters and timestamps are stored in Node.js process memory (`Map<string, Map<string, RateLimitEntry>>`).
+  - **Limitation**: Rate limits are enforced on a per-instance basis. In multi-container, serverless, or horizontally scaled clusters, rate limit buckets are not synchronized across workers.
+  - **Distributed Production Deployment**: For multi-instance deployments, a centralized cache backend such as Redis (Upstash / Valkey / AWS ElastiCache) should replace the in-memory store.
+
