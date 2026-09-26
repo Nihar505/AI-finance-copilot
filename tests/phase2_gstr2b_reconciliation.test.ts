@@ -362,4 +362,29 @@ describe('Phase 2: Database Reconciliation & 8-Way Classification Test', () => {
     );
     assert.equal(Number(countRes.rows[0].cnt), 1);
   });
+
+  test('not_expected_in_2b classification does not depend on a GSTIN being present', async () => {
+    // Assert Slack has NO GSTIN in database (tax_id is null)
+    const db = await getDb();
+    const vendorRes = await db.query(
+      `SELECT id, name, tax_id FROM vendors WHERE org_id = $1 AND name = $2;`,
+      [TEST_ORG_ID, 'Slack Technologies Inc.']
+    );
+    assert.equal(vendorRes.rows.length, 1);
+    assert.equal(vendorRes.rows[0].tax_id, null);
+
+    // Reconcile and assert Slack is still classified as not_expected_in_2b
+    const { rows } = await reconcileITC(TEST_ORG_ID, '2024-10');
+    const slackRow = rows.find((r) => r.book?.vendor_name === 'Slack Technologies Inc.');
+    assert.ok(slackRow, 'Slack bill should be present in reconciliation rows');
+    assert.equal(slackRow.status, 'not_expected_in_2b');
+    assert.equal(slackRow.book?.vendor_gstin, null);
+    assert.equal(slackRow.review_status, 'NEEDS_CA_REVIEW');
+
+    // Contrast with domestic vendor Dell which also has tax_id null, but is data_missing
+    const dellRow = rows.find((r) => r.book?.vendor_name === 'Dell India Enterprise Pvt Ltd');
+    assert.ok(dellRow, 'Dell bill should be present in reconciliation rows');
+    assert.equal(dellRow.status, 'data_missing');
+    assert.equal(dellRow.book?.vendor_gstin, null);
+  });
 });

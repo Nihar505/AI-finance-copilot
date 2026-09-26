@@ -28,10 +28,16 @@ import ExcelJS from 'exceljs';
 // ─────────────────────────────────────────────────────────────────────────────
 // SOURCED GSTN SCHEMA TYPES & REFERENCES
 // ─────────────────────────────────────────────────────────────────────────────
-// Sources:
-// - GST Portal GSTR-2B Help & Tutorials: https://tutorial.gst.gov.in/downloads/gstr2b_offline_utility.pdf
-// - GSTN Official Portal: https://www.gst.gov.in/
-// - GSTN Developer APIs: https://developer.gst.gov.in/
+// Live Sources verified during session:
+// - GST Developer Portal (Returns API): https://developer.gst.gov.in/pages/apiportal/tpreturn.html
+//   (Fetched live; defines gstin, ret_period, rtn_typ, and OIDAR validation regex: [9][9][0-9]{2}[a-zA-Z]{3}[0-9]{5}[O][S][0-9a-zA-Z]{1})
+// - GST Developer Portal Root: https://developer.gst.gov.in/ (Fetched live)
+// - GST Portal Advisory 402: https://www.gst.gov.in/newsandupdates/read/402 (Fetched live)
+//
+// NOTICE: Full JSON payload structures for GSTR-2B require authenticated GSP credentials
+// on the developer portal. Specific field names (b2b, ctin, inum, idt, val, itcavl, rsn, items,
+// txval, iamt, camt, samt) are derived best-effort from public references and are tagged with
+// NEEDS_VERIFICATION comments below. Handled defensively with fallbacks in all cases.
 //
 // Unsupported sections detected in JSON/Excel: 'b2ba', 'cdnr', 'cdnra', 'isd', 'impg', 'impgsez'.
 
@@ -229,28 +235,40 @@ export function generateInvoiceVariants(inv: string | null | undefined): Set<str
 
 /**
  * Detects if a vendor is foreign, RCM, or not expected to file an Indian GSTR-1.
- * Examples: Tax ID starting with 99 (OIDAR / Overseas), containing USA/US/foreign code,
- * or vendor name clearly indicating foreign tech entity with non-standard GSTIN.
+ * Foreign SaaS vendors (e.g. Slack Technologies Inc.) have no Indian establishment
+ * and NO Indian GSTIN. Their invoices do not appear in GSTR-2B; tax must be discharged
+ * under Reverse Charge Mechanism (RCM) under Section 5(3) of the IGST Act.
+ *
+ * This function does NOT depend on a GSTIN being present — an overseas vendor with
+ * vendorGstin=null is correctly identified by corporate form (Inc., LLC, etc.) or known SaaS vendor.
  */
-export function isForeignOrRcmVendor(vendorName: string, vendorGstin: string | null | undefined): boolean {
+export function isForeignOrRcmVendor(vendorName: string, vendorGstin?: string | null): boolean {
   const nameUpper = (vendorName || '').toUpperCase();
   const gstinUpper = normalizeGSTIN(vendorGstin);
 
+  // If a GSTIN was provided, check if it explicitly indicates foreign/non-resident/OIDAR
   if (gstinUpper) {
-    // 99 is state code for Other Territory / Non-resident / OIDAR
     if (gstinUpper.startsWith('99')) return true;
     if (/USA|CORP|LLC|INC|FOREIGN/i.test(gstinUpper)) return true;
-    // Standard Indian GSTIN is 15 alphanumeric characters
     if (gstinUpper.length !== 15) return true;
   }
 
-  if (nameUpper.includes('SLACK TECHNOLOGIES') || nameUpper.includes('GITHUB INC') || nameUpper.includes('STRIPE PAYMENTS')) {
-    if (!gstinUpper || gstinUpper.startsWith('99') || gstinUpper.length !== 15) {
-      return true;
-    }
-  }
+  // Detect foreign legal entities (Inc., LLC, Corp., GmbH without Indian Ltd/Pvt Ltd suffix)
+  const hasForeignCorporateSuffix =
+    /\b(INC\.?|L\.?L\.?C\.?|CORP\.?|CORPORATION|GMBH|S\.?A\.?R\.?L\.?)\b/i.test(nameUpper) &&
+    !/\b(INDIA|PVT|PRIVATE|LIMITED|LTD)\b/i.test(nameUpper);
 
-  return false;
+  // Known overseas cloud/SaaS providers with no domestic GSTR-1 obligation
+  const isKnownOverseasSaaS =
+    nameUpper.includes('SLACK TECHNOLOGIES') ||
+    nameUpper.includes('GITHUB') ||
+    nameUpper.includes('STRIPE PAYMENTS') ||
+    nameUpper.includes('FIGMA') ||
+    nameUpper.includes('ATLASSIAN') ||
+    nameUpper.includes('ZOOM VIDEO') ||
+    nameUpper.includes('NOTION LABS');
+
+  return hasForeignCorporateSuffix || isKnownOverseasSaaS;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -324,6 +342,7 @@ export function parseGSTR2BJson(rawContent: string | Record<string, any>): GSTR2
   }
 
   // Parse supported section: b2b
+  // NEEDS_VERIFICATION: 'b2b' is standard section key in public GSTN references; verify against live portal payload
   const b2bList = root.b2b;
   if (!Array.isArray(b2bList)) {
     if (unsupportedSectionsDetected.length > 0) {
@@ -336,13 +355,16 @@ export function parseGSTR2BJson(rawContent: string | Record<string, any>): GSTR2
       const supplier = b2bList[sIdx];
       if (!supplier || typeof supplier !== 'object') continue;
 
+      // NEEDS_VERIFICATION: 'ctin' represents counterparty supplier GSTIN
       const ctin = normalizeGSTIN(supplier.ctin);
       if (!ctin) {
         warnings.push(`Supplier at index ${sIdx} is missing 'ctin' (GSTIN)`);
         continue;
       }
 
+      // NEEDS_VERIFICATION: supplier trade/legal name key in GSTN payload; handled defensively with trdnm/supp_name/trade_name/cname fallbacks
       const suppName = String(supplier.trdnm || supplier.supp_name || supplier.trade_name || supplier.cname || ctin).trim();
+      // NEEDS_VERIFICATION: 'inv' array key holding supplier invoices
       const invList = supplier.inv;
 
       if (!Array.isArray(invList)) {
@@ -354,24 +376,28 @@ export function parseGSTR2BJson(rawContent: string | Record<string, any>): GSTR2
         const inv = invList[iIdx];
         if (!inv || typeof inv !== 'object') continue;
 
+        // NEEDS_VERIFICATION: 'inum' represents invoice number; handled defensively
         const inum = String(inv.inum || '').trim();
         if (!inum) {
           warnings.push(`Supplier ${ctin} invoice at index ${iIdx} missing 'inum'`);
           continue;
         }
 
+        // NEEDS_VERIFICATION: 'idt' represents invoice date in DD-MM-YYYY format
         const idt = String(inv.idt || '').trim();
+        // NEEDS_VERIFICATION: 'val' represents invoice total value
         const val = Number(inv.val) || 0;
 
-        // ITC availability: 'Y' or 'N' (default 'Y' if omitted)
+        // NEEDS_VERIFICATION: 'itcavl' represents ITC availability ('Y'/'N'); default to 'Y' if omitted
         const itcAvailable = String(inv.itcavl || 'Y').toUpperCase() !== 'N';
 
-        // NEEDS_VERIFICATION: field name for ineligibility reason in GSTN schema; handled defensively
+        // NEEDS_VERIFICATION: field name for ineligibility reason in GSTN schema; handled defensively with rsn/reason/itc_reason fallbacks
         const ineligibleReason = !itcAvailable
           ? String(inv.rsn || inv.reason || inv.itc_reason || 'Ineligible under Section 17(5)').trim()
           : null;
 
         // Sum line items: txval, iamt, camt, samt
+        // NEEDS_VERIFICATION: 'items' array key holding rate-wise line item details
         let taxableVal = 0;
         let igst = 0;
         let cgst = 0;
@@ -379,13 +405,14 @@ export function parseGSTR2BJson(rawContent: string | Record<string, any>): GSTR2
 
         if (Array.isArray(inv.items)) {
           for (const itm of inv.items) {
+            // NEEDS_VERIFICATION: 'txval', 'iamt', 'camt', 'samt' line item breakdown fields
             taxableVal += Number(itm.txval) || 0;
             igst += Number(itm.iamt) || 0;
             cgst += Number(itm.camt) || 0;
             sgst += Number(itm.samt) || 0;
           }
         } else {
-          // If items omitted, check top-level fields
+          // If items omitted, check top-level fields defensively
           taxableVal = Number(inv.txval) || 0;
           igst = Number(inv.iamt) || 0;
           cgst = Number(inv.camt) || 0;
@@ -979,13 +1006,23 @@ export async function reconcileITC(
     }
   }
 
-  // ─── STEP 4: Remaining Book Entries -> data_missing, not_expected_in_2b, or missing_portal
+  // ─── STEP 4: Remaining Book Entries -> not_expected_in_2b, data_missing, or missing_portal
   for (const book of bookEntries) {
     if (!matchedBookIds.has(book.id)) {
-      const gstin = normalizeGSTIN(book.vendor_gstin);
+      const isForeign = isForeignOrRcmVendor(book.vendor_name, book.vendor_gstin);
 
-      if (!gstin) {
-        // Dell case: missing GSTIN in books
+      if (isForeign) {
+        // Slack case: foreign vendor / import of services (RCM) — overseas vendors have NO Indian GSTIN!
+        rows.push({
+          status: 'not_expected_in_2b',
+          book,
+          itc_eligible: 0,
+          itc_blocked: 0,
+          review_status: 'NEEDS_CA_REVIEW',
+          mismatch_reason: 'Foreign vendor / Import of Services (RCM). Overseas supplier has no Indian establishment or GSTIN; invoice is not expected in GSTR-2B. Tax must be discharged via Reverse Charge under Section 5(3) of IGST Act. NEEDS_CA_REVIEW.',
+        });
+      } else if (!normalizeGSTIN(book.vendor_gstin)) {
+        // Dell case: domestic vendor missing GSTIN in books
         rows.push({
           status: 'data_missing',
           book,
@@ -994,18 +1031,8 @@ export async function reconcileITC(
           review_status: 'NEEDS_CA_REVIEW',
           mismatch_reason: 'Vendor has no GSTIN recorded in purchase books. Cannot reconcile against GSTR-2B until GSTIN is provided.',
         });
-      } else if (isForeignOrRcmVendor(book.vendor_name, book.vendor_gstin)) {
-        // Slack case: foreign / RCM vendor, not expected in GSTR-2B
-        rows.push({
-          status: 'not_expected_in_2b',
-          book,
-          itc_eligible: 0,
-          itc_blocked: 0,
-          review_status: 'NEEDS_CA_REVIEW',
-          mismatch_reason: 'Foreign vendor / Import of Services (RCM). ITC is not expected in GSTR-2B; tax must be discharged via Reverse Charge under Section 9(3)/9(4). NEEDS_CA_REVIEW.',
-        });
       } else {
-        // Regular supplier missing from portal
+        // Regular domestic supplier missing from portal
         rows.push({
           status: 'missing_portal',
           book,

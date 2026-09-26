@@ -198,7 +198,7 @@ export async function seedBaseData() {
     { id: 'ven-04', name: 'Dell India Enterprise Pvt Ltd', tax_id: null, tds_section: '194Q', pan: null, default_category_id: 'acc-1500' }, // Missing Tax ID deliberate exception
     { id: 'ven-05', name: 'Bharti Airtel Limited', tax_id: '27AAACB0011F1ZX', tds_section: '194C', pan: 'AAACB0011F', default_category_id: 'acc-5080' },
     { id: 'ven-06', name: 'Razorpay Software Pvt Ltd', tax_id: '27AABCR4433P1ZR', tds_section: '194H', pan: 'AABCR4433P', default_category_id: 'acc-5090' },
-    { id: 'ven-07', name: 'Slack Technologies Inc.', tax_id: '9920USA998811AA', tds_section: null, pan: null, default_category_id: 'acc-5020' }
+    { id: 'ven-07', name: 'Slack Technologies Inc.', tax_id: null, tds_section: null, pan: null, default_category_id: 'acc-5020' }
   ];
 
   for (const v of vendors) {
@@ -401,7 +401,7 @@ export async function seedRealisticSandboxData() {
   // - Mystery Co (MYS-INV-OCT-001): missing_books (portal invoice not in books)
   // Books also contain:
   // - Dell (DELL-CORP-771): data_missing (vendor tax_id is null)
-  // - Slack (SLACK-INV-5510): not_expected_in_2b (foreign vendor, tax_id 9920USA998811AA, NEEDS_CA_REVIEW)
+  // - Slack (SLACK-INV-5510): not_expected_in_2b (foreign vendor, tax_id is null, NEEDS_CA_REVIEW)
   const demoGSTR2B = [
     {
       id: `gstr2b-${ORG_ID}-2024-10-aws`,

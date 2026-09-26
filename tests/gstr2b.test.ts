@@ -76,13 +76,17 @@ describe('GSTR-2B: Rounding-Only Tolerance (Paise Arithmetic)', () => {
 });
 
 describe('GSTR-2B: Foreign & RCM Vendor Identification', () => {
-  test('Identifies foreign vendors by OIDAR 99 state code or foreign identifier', () => {
-    assert.equal(isForeignOrRcmVendor('Slack Technologies Inc.', '9920USA998811AA'), true);
-    assert.equal(isForeignOrRcmVendor('GitHub Inc', '9919USA001122ZZ'), true);
+  test('Identifies foreign vendors even when GSTIN is null or missing', () => {
+    assert.equal(isForeignOrRcmVendor('Slack Technologies Inc.', null), true);
+    assert.equal(isForeignOrRcmVendor('GitHub Inc', null), true);
+    assert.equal(isForeignOrRcmVendor('Stripe Payments', undefined), true);
+    assert.equal(isForeignOrRcmVendor('Figma Inc.', null), true);
   });
 
   test('Identifies domestic regular vendors as standard (not foreign)', () => {
     assert.equal(isForeignOrRcmVendor('Amazon Web Services India Pvt Ltd', '27AABCA1234D1ZP'), false);
     assert.equal(isForeignOrRcmVendor('Google Cloud India Pvt Ltd', '27AABCG5678M1ZQ'), false);
+    // Dell India has null GSTIN in books, but is NOT foreign
+    assert.equal(isForeignOrRcmVendor('Dell India Enterprise Pvt Ltd', null), false);
   });
 });
