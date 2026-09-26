@@ -166,3 +166,282 @@ describe('Milestone 6: Reconciliation Classification', () => {
     assert.equal(classifyMatch({ txnAmount: 100000, invAmount: 100000, daysDiff: 16, counterpartyMatch: true }), 'date_out_of_window');
   });
 });
+
+// ─── Phase 3 Quality Fixture Tests & Precision/Recall Benchmark ──────────────
+import {
+  matchTransactionWithIndexedData,
+  CachedInvoice,
+  CachedBill,
+  RECONCILIATION_WEIGHTS,
+  RECONCILIATION_THRESHOLDS
+} from '../src/lib/reconciliationEngine';
+
+describe('Phase 3: Reconciliation Quality & Fixture Benchmark', () => {
+  const fixtureInvoices: CachedInvoice[] = [
+    {
+      id: 'inv-01',
+      invoice_number: 'INV-2024-001',
+      customer_name: 'Acme Corp Ltd',
+      date: '2024-10-01',
+      total_amount: 100000,
+      status: 'unpaid'
+    },
+    {
+      id: 'inv-02',
+      invoice_number: 'INV-2024-002',
+      customer_name: 'Beta Global Tech',
+      date: '2024-10-05',
+      total_amount: 250000,
+      status: 'unpaid'
+    }
+  ];
+
+  const fixtureBills: CachedBill[] = [
+    {
+      id: 'bill-01',
+      bill_number: 'BILL-AWS-901',
+      vendor_name: 'Amazon Web Services India Pvt Ltd',
+      vendor_id: 'ven-aws',
+      date: '2024-10-02',
+      total_amount: 50000,
+      status: 'unpaid',
+      tds_section: '194C' // 2% TDS -> Net ₹49,000
+    },
+    {
+      id: 'bill-02',
+      bill_number: 'BILL-CONSULT-101',
+      vendor_name: 'Pinnacle Legal & Advisory LLP',
+      vendor_id: 'ven-pin',
+      date: '2024-10-04',
+      total_amount: 100000,
+      status: 'unpaid',
+      tds_section: '194J' // 10% TDS -> Net ₹90,000
+    },
+    {
+      id: 'bill-03A',
+      bill_number: 'BILL-OFFICE-01',
+      vendor_name: 'Standard Office Supplies Pvt Ltd',
+      vendor_id: 'ven-off',
+      date: '2024-10-08',
+      total_amount: 30000,
+      status: 'unpaid',
+      tds_section: '194Q'
+    },
+    {
+      id: 'bill-03B',
+      bill_number: 'BILL-OFFICE-02',
+      vendor_name: 'Standard Office Supplies Pvt Ltd',
+      vendor_id: 'ven-off',
+      date: '2024-10-10',
+      total_amount: 20000,
+      status: 'unpaid',
+      tds_section: '194Q'
+    }
+  ];
+
+  test('Named scoring weights and thresholds are exposed as constants', () => {
+    assert.equal(RECONCILIATION_WEIGHTS.EXPLICIT_NUMBER_MATCH, 45);
+    assert.equal(RECONCILIATION_WEIGHTS.EXACT_AMOUNT_MATCH, 45);
+    assert.equal(RECONCILIATION_WEIGHTS.TDS_NET_MATCH, 35);
+    assert.equal(RECONCILIATION_THRESHOLDS.MIN_CONFIDENCE_SUGGESTION, 60);
+  });
+
+  test('Fixture 1: Exact 1:1 invoice match (Credit transaction)', () => {
+    const txn = {
+      id: 'txn-exact-1',
+      description: 'NEFT INWARD ACME CORP INV-2024-001',
+      counterparty: 'Acme Corp Ltd',
+      amount: 100000,
+      date: '2024-10-03',
+      type: 'credit' as const
+    };
+
+    const match = matchTransactionWithIndexedData(txn, fixtureInvoices, fixtureBills);
+    assert.ok(match, 'Must produce a match candidate');
+    assert.equal(match.matchedEntityType, 'invoice');
+    assert.equal(match.matchedEntityId, 'inv-01');
+    assert.equal(match.matchType, 'exact');
+    assert.ok(match.confidence >= 80, `Expected high confidence >= 80, got ${match.confidence}`);
+  });
+
+  test('Fixture 2: TDS-Net vendor payment under Section 194J (10% TDS withholding)', () => {
+    // Bill ₹100,000 minus 10% TDS = Net ₹90,000
+    const txn = {
+      id: 'txn-tds-1',
+      description: 'RTGS OUT PINNACLE LEGAL ADVISORY FEES',
+      counterparty: 'Pinnacle Legal & Advisory LLP',
+      amount: 90000,
+      date: '2024-10-07',
+      type: 'debit' as const
+    };
+
+    const match = matchTransactionWithIndexedData(txn, fixtureInvoices, fixtureBills);
+    assert.ok(match, 'Must produce a suggested TDS-net match');
+    assert.equal(match.matchedEntityType, 'bill');
+    assert.equal(match.matchedEntityId, 'bill-02');
+    assert.equal(match.matchType, 'tds_net');
+    assert.match(match.reasoning, /194J/);
+    assert.match(match.reasoning, /10%/);
+  });
+
+  test('Fixture 3: TDS-Net vendor payment under Section 194C (2% TDS withholding)', () => {
+    // Bill ₹50,000 minus 2% TDS = Net ₹49,000
+    const txn = {
+      id: 'txn-tds-2',
+      description: 'NEFT PAYMENT AMAZON WEB SERVICES INDIA',
+      counterparty: 'Amazon Web Services India Pvt Ltd',
+      amount: 49000,
+      date: '2024-10-05',
+      type: 'debit' as const
+    };
+
+    const match = matchTransactionWithIndexedData(txn, fixtureInvoices, fixtureBills);
+    assert.ok(match, 'Must produce a suggested TDS-net match');
+    assert.equal(match.matchedEntityType, 'bill');
+    assert.equal(match.matchedEntityId, 'bill-01');
+    assert.equal(match.matchType, 'tds_net');
+    assert.match(match.reasoning, /194C/);
+    assert.match(match.reasoning, /2%/);
+  });
+
+  test('Fixture 4: Batched vendor payment (One-to-many: single debit paying 2 bills)', () => {
+    // 2 bills: ₹30,000 + ₹20,000 = ₹50,000 total
+    const txn = {
+      id: 'txn-batch-1',
+      description: 'CONSOLIDATED VENDOR PAY STANDARD OFFICE SUPPLIES',
+      counterparty: 'Standard Office Supplies Pvt Ltd',
+      amount: 50000,
+      date: '2024-10-12',
+      type: 'debit' as const
+    };
+
+    const match = matchTransactionWithIndexedData(txn, fixtureInvoices, fixtureBills);
+    assert.ok(match, 'Must produce a suggested batched match');
+    assert.equal(match.matchedEntityType, 'bill');
+    assert.equal(match.matchType, 'batched');
+    assert.ok(match.batchedEntityIds && match.batchedEntityIds.length === 2);
+    assert.match(match.reasoning, /Batched payment of 2 bills/);
+  });
+
+  test('Fixture 5: Partial payment receipt (Many-to-one suggested match)', () => {
+    // Invoice is ₹250,000; customer pays part payment of ₹100,000
+    const txn = {
+      id: 'txn-partial-1',
+      description: 'PART PAYMENT BETA GLOBAL TECH INV-2024-002',
+      counterparty: 'Beta Global Tech',
+      amount: 100000,
+      date: '2024-10-08',
+      type: 'credit' as const
+    };
+
+    const match = matchTransactionWithIndexedData(txn, fixtureInvoices, fixtureBills);
+    assert.ok(match, 'Must produce a suggested partial match');
+    assert.equal(match.matchedEntityType, 'invoice');
+    assert.equal(match.matchedEntityId, 'inv-02');
+    assert.equal(match.matchType, 'partial');
+    assert.equal(match.remainingBalance, 150000);
+  });
+
+  test('Fixture 6: Deliberate False-Positive Rejection (Mismatched party & date out of window)', () => {
+    // Random unrelated transaction with coincidence amount of ₹50,000 but wrong counterparty and 60 days later
+    const txn = {
+      id: 'txn-false-positive-1',
+      description: 'PAYMENT TO UNRELATED TRAVEL AGENCY FLIGHT TICKET',
+      counterparty: 'Global Travel Voyages',
+      amount: 50000,
+      date: '2024-12-25', // > 45 days after bills
+      type: 'debit' as const
+    };
+
+    const match = matchTransactionWithIndexedData(txn, fixtureInvoices, fixtureBills);
+    assert.equal(match, null, 'Unrelated transaction with coincidence amount must NOT match');
+  });
+
+  test('Fixture Precision & Recall Benchmark', () => {
+    interface TestCase {
+      txn: {
+        id: string;
+        description: string;
+        counterparty: string;
+        amount: number;
+        date: string;
+        type: 'credit' | 'debit';
+      };
+      shouldMatch: boolean;
+      expectedTargetId?: string;
+    }
+
+    const testSet: TestCase[] = [
+      // True Positive Cases (should match)
+      {
+        txn: { id: 't1', description: 'NEFT ACME INV-2024-001', counterparty: 'Acme Corp Ltd', amount: 100000, date: '2024-10-03', type: 'credit' },
+        shouldMatch: true,
+        expectedTargetId: 'inv-01'
+      },
+      {
+        txn: { id: 't2', description: 'PINNACLE 10% TDS NET', counterparty: 'Pinnacle Legal & Advisory LLP', amount: 90000, date: '2024-10-07', type: 'debit' },
+        shouldMatch: true,
+        expectedTargetId: 'bill-02'
+      },
+      {
+        txn: { id: 't3', description: 'AWS 2% TDS NET', counterparty: 'Amazon Web Services India Pvt Ltd', amount: 49000, date: '2024-10-05', type: 'debit' },
+        shouldMatch: true,
+        expectedTargetId: 'bill-01'
+      },
+      {
+        txn: { id: 't4', description: 'STANDARD OFFICE BATCHED PAY', counterparty: 'Standard Office Supplies Pvt Ltd', amount: 50000, date: '2024-10-12', type: 'debit' },
+        shouldMatch: true,
+        expectedTargetId: 'bill-03A'
+      },
+      {
+        txn: { id: 't5', description: 'BETA GLOBAL TECH PARTIAL', counterparty: 'Beta Global Tech', amount: 100000, date: '2024-10-08', type: 'credit' },
+        shouldMatch: true,
+        expectedTargetId: 'inv-02'
+      },
+      // True Negative Cases (deliberate false positives / noise that must NOT match)
+      {
+        txn: { id: 'tn1', description: 'RANDOM TRAVEL AGENCY', counterparty: 'Global Travel Voyages', amount: 50000, date: '2024-12-25', type: 'debit' },
+        shouldMatch: false
+      },
+      {
+        txn: { id: 'tn2', description: 'COFFEE MACHINE EXPENSE', counterparty: 'Cafe Beans Ltd', amount: 3200, date: '2024-10-05', type: 'debit' },
+        shouldMatch: false
+      },
+      {
+        txn: { id: 'tn3', description: 'REFUND FROM UNKNOWN VENDOR', counterparty: 'Unknown Corp', amount: 100000, date: '2024-10-01', type: 'credit' },
+        shouldMatch: false
+      }
+    ];
+
+    let tp = 0; // True Positives
+    let fp = 0; // False Positives
+    let tn = 0; // True Negatives
+    let fn = 0; // False Negatives
+
+    for (const testCase of testSet) {
+      const match = matchTransactionWithIndexedData(testCase.txn, fixtureInvoices, fixtureBills);
+      if (testCase.shouldMatch) {
+        if (match && match.matchedEntityId === testCase.expectedTargetId) {
+          tp++;
+        } else {
+          fn++;
+        }
+      } else {
+        if (match) {
+          fp++;
+        } else {
+          tn++;
+        }
+      }
+    }
+
+    const precision = tp / (tp + fp);
+    const recall = tp / (tp + fn);
+
+    assert.equal(precision, 1.0, `Expected Precision = 1.0 (100%), got ${precision}`);
+    assert.equal(recall, 1.0, `Expected Recall = 1.0 (100%), got ${recall}`);
+    assert.equal(fp, 0, 'Must have zero False Positives');
+    assert.equal(fn, 0, 'Must have zero False Negatives');
+  });
+});
+
