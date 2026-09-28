@@ -236,6 +236,28 @@ describe('Phase 3: Reconciliation Quality & Fixture Benchmark', () => {
       total_amount: 20000,
       status: 'unpaid',
       tds_section: '194Q'
+    },
+    {
+      id: 'bill-04',
+      bill_number: 'BILL-TECH-FTS-01',
+      vendor_name: 'CloudScale Technical Services LLP',
+      vendor_id: 'ven-fts',
+      date: '2024-10-06',
+      total_amount: 100000,
+      status: 'unpaid',
+      tds_section: '194J(a)' // Fees for Technical Services (FTS): 2% rate per Finance Act 2020 -> Net ₹98,000
+    },
+    {
+      id: 'bill-05-gst',
+      bill_number: 'BILL-LEGAL-GST-01',
+      vendor_name: 'Apex Legal Advocates & Solicitors',
+      vendor_id: 'ven-apex-legal',
+      date: '2024-10-15',
+      total_amount: 118000,      // Gross with 18% GST: ₹100,000 base + ₹18,000 GST
+      taxable_amount: 100000,    // Pre-GST Base: ₹100,000
+      tax_amount: 18000,         // GST: ₹18,000
+      status: 'unpaid',
+      tds_section: '194J(b)'     // 10% on pre-GST base (₹100,000) -> TDS = ₹10,000 -> Expected Net Payment = ₹118,000 - ₹10,000 = ₹108,000
     }
   ];
 
@@ -243,7 +265,7 @@ describe('Phase 3: Reconciliation Quality & Fixture Benchmark', () => {
     assert.equal(RECONCILIATION_WEIGHTS.EXPLICIT_NUMBER_MATCH, 45);
     assert.equal(RECONCILIATION_WEIGHTS.EXACT_AMOUNT_MATCH, 45);
     assert.equal(RECONCILIATION_WEIGHTS.TDS_NET_MATCH, 35);
-    assert.equal(RECONCILIATION_THRESHOLDS.MIN_CONFIDENCE_SUGGESTION, 60);
+    assert.equal(RECONCILIATION_THRESHOLDS.MIN_CONFIDENCE_SUGGESTION, 65);
   });
 
   test('Fixture 1: Exact 1:1 invoice match (Credit transaction)', () => {
@@ -264,7 +286,7 @@ describe('Phase 3: Reconciliation Quality & Fixture Benchmark', () => {
     assert.ok(match.confidence >= 80, `Expected high confidence >= 80, got ${match.confidence}`);
   });
 
-  test('Fixture 2: TDS-Net vendor payment under Section 194J (10% TDS withholding)', () => {
+  test('Fixture 2A: TDS-Net vendor payment under Section 194J(b) / standard 194J (10% TDS withholding)', () => {
     // Bill ₹100,000 minus 10% TDS = Net ₹90,000
     const txn = {
       id: 'txn-tds-1',
@@ -282,6 +304,26 @@ describe('Phase 3: Reconciliation Quality & Fixture Benchmark', () => {
     assert.equal(match.matchType, 'tds_net');
     assert.match(match.reasoning, /194J/);
     assert.match(match.reasoning, /10%/);
+  });
+
+  test('Fixture 2B: TDS-Net vendor payment under Section 194J(a) FTS (2% TDS rate, not 10%)', () => {
+    // Bill ₹100,000 minus 2% TDS under 194J(a) = Net ₹98,000
+    const txn = {
+      id: 'txn-tds-fts',
+      description: 'NEFT TECH FEES CLOUDSCALE TECHNICAL SERVICES',
+      counterparty: 'CloudScale Technical Services LLP',
+      amount: 98000,
+      date: '2024-10-09',
+      type: 'debit' as const
+    };
+
+    const match = matchTransactionWithIndexedData(txn, fixtureInvoices, fixtureBills);
+    assert.ok(match, 'Must produce a suggested TDS-net match');
+    assert.equal(match.matchedEntityType, 'bill');
+    assert.equal(match.matchedEntityId, 'bill-04');
+    assert.equal(match.matchType, 'tds_net');
+    assert.match(match.reasoning, /194J\(a\)/i);
+    assert.match(match.reasoning, /2%/);
   });
 
   test('Fixture 3: TDS-Net vendor payment under Section 194C (2% TDS withholding)', () => {
@@ -322,7 +364,26 @@ describe('Phase 3: Reconciliation Quality & Fixture Benchmark', () => {
     assert.ok(match.batchedEntityIds && match.batchedEntityIds.length === 2);
     assert.match(match.reasoning, /Batched payment of 2 bills/);
   });
+  test('Fixture 4: GST-bearing vendor bill TDS-net calculation (TDS strictly on pre-GST base)', () => {
+    // Bill: Gross ₹118,000 (₹100,000 base + ₹18,000 18% GST).
+    // TDS under 194J(b) is 10% on ₹100,000 base = ₹10,000 (CBDT Circular 23/2017).
+    // Expected Net Payment = ₹118,000 - ₹10,000 = ₹108,000.
+    const txn = {
+      id: 'txn-tds-gst-1',
+      description: 'PAYMENT TO APEX LEGAL BILL-LEGAL-GST-01 NET OF 10% TDS ON BASE',
+      counterparty: 'Apex Legal Advocates & Solicitors',
+      amount: 108000,
+      date: '2024-10-18',
+      type: 'debit' as const
+    };
 
+    const match = matchTransactionWithIndexedData(txn, fixtureInvoices, fixtureBills);
+    assert.ok(match, 'Must match GST-bearing bill net of pre-GST TDS');
+    assert.equal(match.matchedEntityType, 'bill');
+    assert.equal(match.matchedEntityId, 'bill-05-gst');
+    assert.equal(match.matchType, 'tds_net');
+    assert.ok(match.reasoning.includes('pre-GST base ₹100,000'), 'Reasoning must cite pre-GST base calculation');
+  });
   test('Fixture 5: Partial payment receipt (Many-to-one suggested match)', () => {
     // Invoice is ₹250,000; customer pays part payment of ₹100,000
     const txn = {

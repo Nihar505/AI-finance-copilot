@@ -30,6 +30,8 @@ export interface CachedBill {
   vendor_id?: string | null;
   date: string;
   total_amount: number;
+  taxable_amount?: number;
+  tax_amount?: number;
   status: string;
   tds_section?: string | null;
 }
@@ -41,7 +43,7 @@ export const RECONCILIATION_WEIGHTS = {
   EXPLICIT_NUMBER_MATCH: 45,
   EXACT_AMOUNT_MATCH: 45,
   TDS_NET_MATCH: 35,
-  PARTIAL_AMOUNT_MATCH: 20,
+  PARTIAL_AMOUNT_MATCH: 25,
   BATCHED_AMOUNT_MATCH: 35,
   COUNTERPARTY_NAME_MATCH: 25,
   DATE_WITHIN_7_DAYS: 15,
@@ -52,14 +54,17 @@ export const RECONCILIATION_WEIGHTS = {
  * Named thresholds for reconciliation matching decisions.
  */
 export const RECONCILIATION_THRESHOLDS = {
-  MIN_CONFIDENCE_SUGGESTION: 60,
+  MIN_CONFIDENCE_SUGGESTION: 65,
   MAX_DATE_DIFF_DAYS: 45,
   ROUNDING_TOLERANCE_PAISE: 100, // ₹1.00 (100 paise)
   MAX_MATCH_CONFIDENCE: 99,
 } as const;
 
+import { STATUTORY_TDS_RULES, lookupStatutoryRule, StatutoryTdsRule } from './statutoryRules';
+
 /**
  * Standard TDS section percentage rates for vendor payment withholding.
+ * Baseline lookup with sub-section specific rates.
  */
 export const STANDARD_TDS_SECTION_RATES: Record<string, number> = {
   '194C': 2.0,       // Contractors / Sub-contractors (corporate/firm 2%)
@@ -71,6 +76,24 @@ export const STANDARD_TDS_SECTION_RATES: Record<string, number> = {
   '194I(a)': 2.0,    // Rent plant / machinery (2%)
   '194Q': 0.1,       // Purchase of goods (0.1%)
 };
+
+/**
+ * Dynamically resolves the statutory TDS rate for a section or sub-section
+ * using lookupStatutoryRule (respecting effective dates and legal regimes).
+ */
+export function resolveStatutoryTdsRate(
+  section: string | null | undefined,
+  paymentDate?: string,
+  candidateRules?: StatutoryTdsRule[]
+): number | null {
+  if (!section) return null;
+  const date = paymentDate || new Date().toISOString().slice(0, 10);
+  const rule = lookupStatutoryRule(section, date, candidateRules);
+  if (rule && rule.rate !== null && rule.rate !== undefined) {
+    return rule.rate;
+  }
+  return STANDARD_TDS_SECTION_RATES[section] ?? null;
+}
 
 export function calculateDateDiffDays(d1: string, d2: string): number {
   const t1 = new Date(d1).getTime();
@@ -207,9 +230,10 @@ export function matchTransactionWithIndexedData(
 
       // Check vendor TDS section if configured
       const vendorSection = bill.tds_section;
-      const tdsRate = vendorSection && STANDARD_TDS_SECTION_RATES[vendorSection] !== undefined
-        ? STANDARD_TDS_SECTION_RATES[vendorSection]
-        : null;
+      const tdsRate = resolveStatutoryTdsRate(vendorSection, txn.date || bill.date);
+      const preGstBase = bill.taxable_amount !== undefined
+        ? Number(bill.taxable_amount)
+        : (bill.tax_amount !== undefined ? (billAmt - Number(bill.tax_amount)) : billAmt);
 
       const amtDiff = Math.abs(txn.amount - billAmt);
 
@@ -218,13 +242,13 @@ export function matchTransactionWithIndexedData(
         matchType = 'exact';
         reasons.push(`Exact amount match of ₹${txn.amount.toLocaleString()}.`);
       } else if (tdsRate !== null && txn.amount < billAmt) {
-        const expectedNet = billAmt * (1 - tdsRate / 100);
+        const withheldTds = (preGstBase * tdsRate) / 100;
+        const expectedNet = billAmt - withheldTds;
         const tdsDiff = Math.abs(txn.amount - expectedNet);
         if (tdsDiff <= (RECONCILIATION_THRESHOLDS.ROUNDING_TOLERANCE_PAISE / 100)) {
-          const withheldTds = billAmt - txn.amount;
           score += RECONCILIATION_WEIGHTS.TDS_NET_MATCH;
           matchType = 'tds_net';
-          reasons.push(`Vendor payment net of Section ${vendorSection} TDS (${tdsRate}%). Gross bill ₹${billAmt.toLocaleString()}, net payment ₹${txn.amount.toLocaleString()}, withheld TDS ₹${withheldTds.toLocaleString()}.`);
+          reasons.push(`Vendor payment net of Section ${vendorSection} TDS (${tdsRate}% on pre-GST base ₹${preGstBase.toLocaleString()}). Gross bill ₹${billAmt.toLocaleString()}, net payment ₹${txn.amount.toLocaleString()}, withheld TDS ₹${withheldTds.toLocaleString()}.`);
         } else {
           // Check for partial payment
           score += RECONCILIATION_WEIGHTS.PARTIAL_AMOUNT_MATCH;
@@ -361,7 +385,7 @@ export async function matchTransaction(
       invoices = invoicesRes.rows;
     } else {
       const billsRes = await db.query(
-        `SELECT b.id, b.bill_number, b.vendor_name, b.vendor_id, b.date, b.total_amount, b.status, v.tds_section
+        `SELECT b.id, b.bill_number, b.vendor_name, b.vendor_id, b.date, b.total_amount, b.tax_amount, b.status, v.tds_section
          FROM bills b
          LEFT JOIN vendors v ON b.vendor_id = v.id
          WHERE b.org_id = $1 AND b.status != 'paid';`,
@@ -389,7 +413,7 @@ export async function runReconciliationBatch(orgId: string): Promise<number> {
 
   // 2. Single indexed query for all open bills with vendor TDS sections
   const billsRes = await db.query<CachedBill>(
-    `SELECT b.id, b.bill_number, b.vendor_name, b.vendor_id, b.date, b.total_amount, b.status, v.tds_section
+    `SELECT b.id, b.bill_number, b.vendor_name, b.vendor_id, b.date, b.total_amount, b.tax_amount, b.status, v.tds_section
      FROM bills b
      LEFT JOIN vendors v ON b.vendor_id = v.id
      WHERE b.org_id = $1 AND b.status != 'paid';`,

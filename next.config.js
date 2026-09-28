@@ -2,7 +2,7 @@
 const nextConfig = {
   reactStrictMode: false,
   experimental: {
-    serverComponentsExternalPackages: ['@electric-sql/pglite', 'pg'],
+    serverComponentsExternalPackages: ['@electric-sql/pglite', 'pg', 'exceljs'],
   },
   webpack: (config, { isServer }) => {
     if (!isServer) {

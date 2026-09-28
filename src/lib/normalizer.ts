@@ -1,5 +1,5 @@
 import Papa from 'papaparse';
-import ExcelJS from 'exceljs';
+import { getExcelJS } from './excelHelper';
 import { isValidDate } from './security';
 
 export interface NormalizedTransaction {
@@ -124,6 +124,7 @@ export function extractCounterparty(description: string): string {
 }
 
 async function parseExcelRows(fileBuffer: Buffer | string): Promise<Record<string, any>[]> {
+  const ExcelJS = getExcelJS();
   const workbook = new ExcelJS.Workbook();
   const buffer = typeof fileBuffer === 'string' ? Buffer.from(fileBuffer, 'base64') : fileBuffer;
   await workbook.xlsx.load(buffer as any);

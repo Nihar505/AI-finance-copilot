@@ -234,16 +234,16 @@ DELL-CORP-771,Dell India Enterprise Pvt Ltd,2024-10-14,2024-10-28,165000.00,2516
         </div>
       </div>
 
-      {/* Automated Banking & Protocol Gateway Uplink */}
+      {/* Protocol Gateway Flow Visualization */}
       <div className="panel" style={{ marginTop: '20px' }}>
         <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Radio size={16} color="#ffffff" className="animate-pulse" />
-              <h2 className="panel-title">Nexus Banking & ERP Gateway Uplink</h2>
+              <h2 className="panel-title">Ingestion & Protocol Pipeline Architecture</h2>
             </div>
             <p className="panel-subtitle">
-              Live telemetry and automated gateway uplink connecting core banking protocols, ERPs (SAP, Tally, Zoho), and payment rails.
+              Visual pipeline telemetry tracing raw statement ingestion, normalization, statutory rules verification, and relational persistence.
             </p>
           </div>
         </div>

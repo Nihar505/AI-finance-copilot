@@ -1,4 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+// next/server is imported as a type-only reference so that this module can be
+// loaded in plain Node test environments (tsx --test) without triggering the
+// full Next.js runtime initialiser, which hangs outside of a Next.js server.
+import type { NextRequest } from 'next/server';
 import crypto from 'crypto';
 import { getDb } from './db';
 import { normalizeRole } from './permissions';
@@ -174,7 +177,17 @@ export function verifyPassword(password: string, storedHash: string): boolean {
  * 2. Enforces strict tenant boundary validation on any requested orgId.
  * 3. Never falls back to arbitrary organizations in production.
  */
-export async function getAuthContext(req?: NextRequest): Promise<AuthContext> {
+/**
+ * Minimal duck-typed subset of NextRequest used internally.
+ * Avoids importing the full Next.js runtime in test environments.
+ */
+export interface AuthRequest {
+  cookies: { get(name: string): { value: string } | undefined };
+  headers: { get(name: string): string | null };
+  nextUrl?: { searchParams: { get(name: string): string | null } };
+}
+
+export async function getAuthContext(req?: NextRequest | AuthRequest): Promise<AuthContext> {
   const db = await getDb();
 
   // 1. Check for cryptographic session token

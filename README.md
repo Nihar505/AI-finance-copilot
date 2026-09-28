@@ -12,7 +12,7 @@ Multi-entity financial operations and compliance copilot tailored for Indian acc
 
 ## Security Architecture & Operational Notes
 
-- **Authentication & Sessions**: Cryptographically signed HMAC-SHA256 session tokens stored in secure HTTP-Only cookies. Passwords hashed using PBKDF2-SHA512.
+- **Authentication & Sessions**: Cryptographically signed HMAC-SHA256 session tokens stored in secure HTTP-Only cookies. Passwords hashed using PBKDF2-SHA512 with configurable development seeds (`DEMO_USER_PASSWORD` / `SEED_CA_PASSWORD`, `SEED_OWNER_PASSWORD`, etc.).
 - **Dev Auth Fallback**: Development auth fallback headers (`x-user-role`, `x-org-id`) are **strictly default-denied** and require `ALLOW_INSECURE_DEV_AUTH=true` explicitly in non-production environments.
-- **LLM Data Boundary**: Bank narrations passed to Gemini are length-capped, stripped of control characters, and wrapped in strict `<untrusted_bank_narration>` XML boundary tags. AI model outputs are validated against strict runtime schemas.
+- **LLM Data Boundary**: Bank narrations passed to Gemini are length-capped (500 characters), stripped of control characters, and wrapped in strict `<untrusted_bank_narration>` XML boundary tags. AI model outputs are validated against strict runtime schemas.
 - **Rate Limiting Architecture Limitation**: The application employs an in-memory sliding-window token bucket limiter (`src/lib/rateLimiter.ts`). Rate limits are maintained per Node.js process instance. For horizontally scaled multi-instance or serverless deployments, replace the in-memory store with a shared distributed Redis backend (e.g. Upstash, Redis Cluster).

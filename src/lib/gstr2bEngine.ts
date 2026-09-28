@@ -1,5 +1,5 @@
 import { getDb } from './db';
-import ExcelJS from 'exceljs';
+import { getExcelJS } from './excelHelper';
 
 /**
  * Milestone: GSTR-2B Input Tax Credit (ITC) Reconciliation Engine
@@ -496,6 +496,7 @@ export async function parseGSTR2BExcel(buffer: Buffer): Promise<GSTR2BParseResul
   const warnings: string[] = [];
   const unsupportedSectionsDetected: string[] = [];
 
+  const ExcelJS = getExcelJS();
   const workbook = new ExcelJS.Workbook();
   try {
     await workbook.xlsx.load(buffer as any);
@@ -512,7 +513,7 @@ export async function parseGSTR2BExcel(buffer: Buffer): Promise<GSTR2BParseResul
   }
 
   // Find all worksheets and check for unsupported sections
-  let b2bSheet: ExcelJS.Worksheet | undefined;
+  let b2bSheet: any | undefined;
   const unsupportedSheetNames = ['CDNR', 'CDNRA', 'B2BA', 'ISD', 'IMPG', 'IMPGSEZ'];
 
   for (const sheet of workbook.worksheets) {
